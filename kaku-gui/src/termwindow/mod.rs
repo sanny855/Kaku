@@ -914,7 +914,7 @@ impl TermWindow {
         event: WindowEvent,
         window: &Window,
     ) -> anyhow::Result<bool> {
-        log::debug!("{event:?}");
+        log::trace!("{event:?}");
         match event {
             WindowEvent::Destroyed => {
                 // Ensure that we cancel any overlays we had running, so
