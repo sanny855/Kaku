@@ -664,6 +664,9 @@ if [[ -d "$BACKUP_APP" ]]; then
   /bin/rm -rf "$BACKUP_APP" || true
 fi
 
+log "refresh shell integration"
+"$TARGET_CLI" init --update-only >/dev/null 2>&1 || true
+
 log "relaunch app"
 /usr/bin/open "$TARGET_APP" >/dev/null 2>&1 || true
 
