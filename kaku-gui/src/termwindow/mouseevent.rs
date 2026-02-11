@@ -934,7 +934,7 @@ impl super::TermWindow {
             }),
         };
 
-        if allow_action && !near_window_edge {
+        if allow_action {
             if let Some(mut event_trigger_type) = event_trigger_type {
                 self.current_event = Some(event_trigger_type.to_dynamic());
                 let mut modifiers = event.modifiers;
@@ -1050,7 +1050,6 @@ impl super::TermWindow {
         };
 
         if allow_action
-            && !near_window_edge
             && !(self.config.swallow_mouse_click_on_pane_focus && is_click_to_focus_pane)
         {
             pane.mouse_event(mouse_event).ok();

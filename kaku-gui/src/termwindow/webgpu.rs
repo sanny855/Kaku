@@ -559,22 +559,28 @@ impl WebGpuState {
             _ => {}
         }
 
-        if dims == *self.dimensions.borrow() {
+        let dims_unchanged = dims == *self.dimensions.borrow();
+        if !dims_unchanged {
+            *self.dimensions.borrow_mut() = dims;
+        }
+
+        let desired_present_mode = if live_resizing && self.supports_mailbox {
+            wgpu::PresentMode::Mailbox
+        } else {
+            wgpu::PresentMode::Fifo
+        };
+
+        let mut config = self.config.borrow_mut();
+        let present_mode_changed = config.present_mode != desired_present_mode;
+        if dims_unchanged && !present_mode_changed {
             return;
         }
-        *self.dimensions.borrow_mut() = dims;
-        let mut config = self.config.borrow_mut();
-        config.width = dims.pixel_width as u32;
-        config.height = dims.pixel_height as u32;
 
-        // During live resize, use Mailbox (if available) to avoid VSync
-        // blocking the main thread on every frame, which causes visible lag.
-        // Switch back to Fifo for normal rendering (lower power, no tearing).
-        if live_resizing && self.supports_mailbox {
-            config.present_mode = wgpu::PresentMode::Mailbox;
-        } else {
-            config.present_mode = wgpu::PresentMode::Fifo;
+        if !dims_unchanged {
+            config.width = dims.pixel_width as u32;
+            config.height = dims.pixel_height as u32;
         }
+        config.present_mode = desired_present_mode;
 
         if config.width > 0 && config.height > 0 {
             // Avoid reconfiguring with a 0 sized surface, as webgpu will
