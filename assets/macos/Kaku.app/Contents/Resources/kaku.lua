@@ -294,7 +294,9 @@ config.colors = {
 config.default_prog = { '/bin/zsh', '-l' }
 
 -- ===== macOS Specific =====
-config.send_composed_key_when_left_alt_is_pressed = true
+-- Keep Left Option as Meta so Alt-based Vim/Neovim keybindings work reliably.
+config.send_composed_key_when_left_alt_is_pressed = false
+-- Keep Right Option available for composing locale/symbol characters.
 config.send_composed_key_when_right_alt_is_pressed = true
 config.native_macos_fullscreen_mode = true
 config.quit_when_all_windows_are_closed = false
