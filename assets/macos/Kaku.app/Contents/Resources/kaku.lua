@@ -16,6 +16,19 @@ local function basename(path)
   return path:match('([^/]+)$')
 end
 
+-- URL decode helper for Chinese characters in paths
+-- Converts %E9%9F%B3%E4%B9%90 -> 音乐
+local function url_decode(str)
+  if not str then
+    return str
+  end
+  -- First, handle UTF-8 encoded sequences (%XX%YY%ZZ)
+  local result = str:gsub('%%([0-9A-Fa-f][0-9A-Fa-f])', function(hex)
+    return string.char(tonumber(hex, 16))
+  end)
+  return result
+end
+
 local function padding_matches(current, expected)
   return current
     and current.left == expected.left
@@ -62,6 +75,8 @@ local function extract_path_from_cwd(cwd)
   end
 
   path = path:gsub('^file://[^/]*', ''):gsub('/$', '')
+  -- Decode URL-encoded characters (e.g., %E9%9F%B3%E4%B9%90 -> 音乐)
+  path = url_decode(path)
   return path
 end
 
