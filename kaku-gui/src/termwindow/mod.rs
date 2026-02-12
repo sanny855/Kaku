@@ -2221,11 +2221,23 @@ impl TermWindow {
             };
 
             // If the number of tabs changed and caused the tab bar to
-            // hide/show, then we'll need to resize things.  It is simplest
-            // to piggy back on the config reloading code for that, so that
-            // is what we're doing.
+            // hide/show, then we'll need to resize things. We only update
+            // what's needed for tab bar visibility to avoid the stutter
+            // caused by a full config_was_reloaded() call.
             if show_tab_bar != self.show_tab_bar {
-                self.config_was_reloaded();
+                let owned_window = window.clone();
+                self.show_tab_bar = show_tab_bar;
+                // Pre-warm the title font so the first paint of the tab bar
+                // does not block on lazy font loading (which causes a stutter
+                // specifically at the 1↔2 tab boundary).
+                if show_tab_bar && self.config.use_fancy_tab_bar {
+                    let _ = self.fonts.title_font();
+                }
+                self.fancy_tab_bar.take();
+                self.invalidate_fancy_tab_bar();
+                let dimensions = self.dimensions;
+                self.apply_dimensions(&dimensions, None, &owned_window);
+                owned_window.invalidate();
             }
         }
         self.schedule_next_status_update();
