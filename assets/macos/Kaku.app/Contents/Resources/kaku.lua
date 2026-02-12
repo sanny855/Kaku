@@ -334,14 +334,18 @@ config.keys = {
     action = wezterm.action.SpawnWindow,
   },
 
-  -- Cmd+W: close tab when possible; hide app when it is the last tab
+  -- Cmd+W: close pane > close tab > hide app
   {
     key = 'w',
     mods = 'CMD',
     action = wezterm.action_callback(function(win, pane)
       local mux_win = win:mux_window()
       local tabs = mux_win and mux_win:tabs() or {}
-      if #tabs > 1 then
+      local current_tab = pane:tab()
+      local panes = current_tab and current_tab:panes() or {}
+      if #panes > 1 then
+        win:perform_action(wezterm.action.CloseCurrentPane { confirm = false }, pane)
+      elseif #tabs > 1 then
         win:perform_action(wezterm.action.CloseCurrentTab { confirm = false }, pane)
       else
         win:perform_action(wezterm.action.HideApplication, pane)
@@ -613,6 +617,9 @@ config.animation_fps = 60
 config.max_fps = 60
 
 -- ===== Visuals & Splits =====
+-- Split pane gap: gutter = 1 + 2*gap cells, giving ~40px padding on each side
+config.split_pane_gap = 2
+
 -- Inactive panes: No dimming (consistent background)
 config.inactive_pane_hsb = {
   saturation = 1.0,
