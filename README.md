@@ -29,7 +29,7 @@
 ## Quick Start
 
 1. [Download Kaku DMG](https://github.com/tw93/Kaku/releases/latest) & Drag to Applications
-2. Or install with Homebrew: `brew install tw93/tap/kakuterm`
+2. Or install with Homebrew: `brew install tw93/tap/kakuku`
 3. Open Kaku. The app is notarized by Apple, so it opens without security warnings
 4. On first launch, Kaku will automatically set up your shell environment
 

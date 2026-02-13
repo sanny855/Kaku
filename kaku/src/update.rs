@@ -38,7 +38,7 @@ mod imp {
     const RELEASE_LATEST_URL: &str = "https://github.com/tw93/Kaku/releases/latest";
     const UPDATE_ZIP_NAME: &str = "kaku_for_update.zip";
     const UPDATE_SHA_NAME: &str = "kaku_for_update.zip.sha256";
-    const BREW_CASK_NAME: &str = "tw93/tap/kakuterm";
+    const BREW_CASK_NAME: &str = "tw93/tap/kakuku";
 
     #[derive(Debug, Deserialize)]
     struct GitHubRelease {
