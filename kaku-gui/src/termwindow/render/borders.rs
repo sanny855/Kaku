@@ -8,7 +8,16 @@ impl crate::TermWindow {
         &mut self,
         layers: &mut TripleLayerQuadAllocator,
     ) -> anyhow::Result<()> {
-        let border_dimensions = self.get_os_border();
+        let is_fullscreen = self.window_state.contains(::window::WindowState::FULL_SCREEN);
+        let border_dimensions = if is_fullscreen {
+            self.os_parameters
+                .as_ref()
+                .and_then(|p| p.border_dimensions.clone())
+                .unwrap_or_default()
+        } else {
+            self.get_os_border()
+        };
+        let fullscreen_border_color = border_dimensions.color;
 
         if border_dimensions.top.get() > 0
             || border_dimensions.bottom.get() > 0
@@ -24,11 +33,15 @@ impl crate::TermWindow {
                     layers,
                     1,
                     euclid::rect(0.0, 0.0, width, border_top),
-                    self.config
-                        .window_frame
-                        .border_top_color
-                        .map(|c| c.to_linear())
-                        .unwrap_or(border_dimensions.color),
+                    if is_fullscreen {
+                        fullscreen_border_color
+                    } else {
+                        self.config
+                            .window_frame
+                            .border_top_color
+                            .map(|c| c.to_linear())
+                            .unwrap_or(border_dimensions.color)
+                    },
                 )?;
             }
 
@@ -38,11 +51,15 @@ impl crate::TermWindow {
                     layers,
                     1,
                     euclid::rect(0.0, 0.0, border_left, height),
-                    self.config
-                        .window_frame
-                        .border_left_color
-                        .map(|c| c.to_linear())
-                        .unwrap_or(border_dimensions.color),
+                    if is_fullscreen {
+                        fullscreen_border_color
+                    } else {
+                        self.config
+                            .window_frame
+                            .border_left_color
+                            .map(|c| c.to_linear())
+                            .unwrap_or(border_dimensions.color)
+                    },
                 )?;
             }
 
@@ -52,11 +69,15 @@ impl crate::TermWindow {
                     layers,
                     1,
                     euclid::rect(0.0, height - border_bottom, width, height),
-                    self.config
-                        .window_frame
-                        .border_bottom_color
-                        .map(|c| c.to_linear())
-                        .unwrap_or(border_dimensions.color),
+                    if is_fullscreen {
+                        fullscreen_border_color
+                    } else {
+                        self.config
+                            .window_frame
+                            .border_bottom_color
+                            .map(|c| c.to_linear())
+                            .unwrap_or(border_dimensions.color)
+                    },
                 )?;
             }
 
@@ -66,11 +87,58 @@ impl crate::TermWindow {
                     layers,
                     1,
                     euclid::rect(width - border_right, 0.0, border_right, height),
-                    self.config
-                        .window_frame
-                        .border_right_color
-                        .map(|c| c.to_linear())
-                        .unwrap_or(border_dimensions.color),
+                    if is_fullscreen {
+                        fullscreen_border_color
+                    } else {
+                        self.config
+                            .window_frame
+                            .border_right_color
+                            .map(|c| c.to_linear())
+                            .unwrap_or(border_dimensions.color)
+                    },
+                )?;
+            }
+        }
+
+        // macOS simple fullscreen can occasionally show a 1px seam at the
+        // window edge due to compositor rounding. Cover edges explicitly.
+        let is_simple_fullscreen_with_notch_padding = is_fullscreen
+            && self
+                .os_parameters
+                .as_ref()
+                .and_then(|p| p.border_dimensions.as_ref())
+                .map(|b| b.top.get() > 0 || b.left.get() > 0 || b.right.get() > 0 || b.bottom.get() > 0)
+                .unwrap_or(false);
+
+        if is_simple_fullscreen_with_notch_padding {
+            let height = self.dimensions.pixel_height as f32;
+            let width = self.dimensions.pixel_width as f32;
+            let edge = 1.0f32;
+
+            if width > 0.0 && height > 0.0 {
+                self.filled_rectangle(
+                    layers,
+                    1,
+                    euclid::rect(0.0, 0.0, width, edge),
+                    fullscreen_border_color,
+                )?;
+                self.filled_rectangle(
+                    layers,
+                    1,
+                    euclid::rect(0.0, (height - edge).max(0.0), width, edge),
+                    fullscreen_border_color,
+                )?;
+                self.filled_rectangle(
+                    layers,
+                    1,
+                    euclid::rect(0.0, 0.0, edge, height),
+                    fullscreen_border_color,
+                )?;
+                self.filled_rectangle(
+                    layers,
+                    1,
+                    euclid::rect((width - edge).max(0.0), 0.0, edge, height),
+                    fullscreen_border_color,
                 )?;
             }
         }
@@ -138,11 +206,18 @@ impl crate::TermWindow {
     }
 
     pub fn get_os_border(&self) -> window::parameters::Border {
-        Self::get_os_border_impl(
-            &self.os_parameters,
-            &self.config,
-            &self.dimensions,
-            &self.render_metrics,
-        )
+        if self.window_state.contains(::window::WindowState::FULL_SCREEN) {
+            self.os_parameters
+                .as_ref()
+                .and_then(|p| p.border_dimensions.clone())
+                .unwrap_or_default()
+        } else {
+            Self::get_os_border_impl(
+                &self.os_parameters,
+                &self.config,
+                &self.dimensions,
+                &self.render_metrics,
+            )
+        }
     }
 }

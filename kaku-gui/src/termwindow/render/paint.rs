@@ -169,22 +169,8 @@ impl crate::TermWindow {
             }
         }
 
-        // Check if we're in a zoom animation - if so, skip content rendering
-        // This prevents font flickering during maximize/restore transitions.
-        // The screen will show only the background color during animation.
-        let in_zoom_animation = self
-            .window
-            .as_ref()
-            .map_or(false, |w| w.is_zoom_animation_active());
-
         // Clear out UI item positions; we'll rebuild these as we render
         self.ui_items.clear();
-
-        if in_zoom_animation {
-            // During zoom animation, just render the background and return
-            // to avoid rendering text with incorrect scaling
-            return self.paint_background_only();
-        }
 
         let panes = self.get_panes_to_render();
         let focused = self.focused.is_some();
@@ -263,6 +249,31 @@ impl crate::TermWindow {
             .context("filled_rectangle for window background")?;
         }
 
+        let hide_transition_content = self
+            .window
+            .as_ref()
+            .map(|window| window.is_zoom_animation_active())
+            .unwrap_or(false);
+        if hide_transition_content {
+            // During fullscreen transition, keep only a stable background to avoid
+            // one-frame text scale pops.
+            let hide_background = self.palette().background.to_linear();
+            self.filled_rectangle(
+                &mut layers,
+                0,
+                euclid::rect(
+                    0.,
+                    0.,
+                    self.dimensions.pixel_width as f32,
+                    self.dimensions.pixel_height as f32,
+                ),
+                hide_background,
+            )
+            .context("filled_rectangle for fullscreen transition hide")?;
+            drop(layers);
+            return Ok(());
+        }
+
         for pos in panes {
             if pos.is_active {
                 self.update_text_cursor(&pos);
@@ -290,36 +301,6 @@ impl crate::TermWindow {
             .context("paint_window_borders")?;
         drop(layers);
         self.paint_modal().context("paint_modal")?;
-
-        Ok(())
-    }
-
-    /// Paint only the background during zoom animation to avoid font flickering
-    fn paint_background_only(&mut self) -> anyhow::Result<()> {
-        let bg_color = self.palette().background.to_linear();
-        let window_is_transparent =
-            !self.window_background.is_empty() || self.config.window_background_opacity != 1.0;
-
-        if self.window_background.is_empty() || !window_is_transparent {
-            // Use solid terminal background color
-            let gl_state = self.render_state.as_ref().unwrap();
-            let layer = gl_state
-                .layer_for_zindex(0)
-                .context("layer_for_zindex(0)")?;
-            let mut layers = layer.quad_allocator();
-
-            // Fill the entire window with background color
-            let pixel_width = self.dimensions.pixel_width as f32;
-            let pixel_height = self.dimensions.pixel_height as f32;
-
-            self.filled_rectangle(
-                &mut layers,
-                0,
-                euclid::rect(0., 0., pixel_width, pixel_height),
-                bg_color,
-            )
-            .context("filled_rectangle for zoom background")?;
-        }
 
         Ok(())
     }

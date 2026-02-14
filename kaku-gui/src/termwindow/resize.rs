@@ -53,14 +53,23 @@ impl super::TermWindow {
         if last_state != self.window_state {
             self.load_os_parameters();
         }
+        let fullscreen_transition =
+            last_state.contains(WindowState::FULL_SCREEN)
+                != self.window_state.contains(WindowState::FULL_SCREEN);
 
         if let Some(webgpu) = self.webgpu.as_mut() {
             webgpu.resize(dimensions);
         }
 
-        // For simple, user-interactive resizes where the dpi doesn't change,
-        // skip our scaling recalculation
-        if live_resizing && self.dimensions.dpi == dimensions.dpi {
+        // Align fullscreen transition handling with maximize/restore behavior:
+        // keep current dpi for this transition frame so text doesn't pop larger/smaller.
+        if fullscreen_transition && self.dimensions.dpi != dimensions.dpi {
+            let mut stabilized = dimensions;
+            stabilized.dpi = self.dimensions.dpi;
+            self.apply_dimensions(&stabilized, None, window);
+        } else if live_resizing && self.dimensions.dpi == dimensions.dpi {
+            // For simple, user-interactive resizes where the dpi doesn't change,
+            // skip our scaling recalculation.
             self.apply_dimensions(&dimensions, None, window);
         } else {
             self.scaling_changed(dimensions, self.fonts.get_font_scale(), window);
