@@ -1061,7 +1061,7 @@ impl TermWindow {
                 // be nasty for folks with a lot of windows.
                 // <https://github.com/wezterm/wezterm/issues/2295>
                 config::reload();
-                self.config_was_reloaded();
+                self.config_was_reloaded_silently();
                 Ok(true)
             }
             WindowEvent::PerformKeyAssignment(action) => {
@@ -1327,7 +1327,9 @@ impl TermWindow {
             TermWindowNotif::SetConfigOverrides(value) => {
                 if value != self.config_overrides {
                     self.config_overrides = value;
-                    self.config_was_reloaded();
+                    // Overrides are often updated by runtime hooks (eg: resize/fullscreen),
+                    // so keep this reload silent to avoid noisy toast spam.
+                    self.config_was_reloaded_silently();
                 }
             }
             TermWindowNotif::CancelOverlayForPane(pane_id) => {
@@ -1866,6 +1868,14 @@ impl TermWindow {
     }
 
     pub fn config_was_reloaded(&mut self) {
+        self.config_was_reloaded_impl(true);
+    }
+
+    fn config_was_reloaded_silently(&mut self) {
+        self.config_was_reloaded_impl(false);
+    }
+
+    fn config_was_reloaded_impl(&mut self, show_toast: bool) {
         log::debug!(
             "config was reloaded, overrides: {:?}",
             self.config_overrides
@@ -1982,8 +1992,10 @@ impl TermWindow {
         self.invalidate_modal();
         self.emit_window_event("window-config-reloaded", None);
 
-        // Show toast notification for config reload
-        self.show_toast("Config reloaded".to_string());
+        if show_toast {
+            // Show toast notification for explicit config reload.
+            self.show_toast("Config reloaded".to_string());
+        }
     }
 
     fn invalidate_modal(&mut self) {
