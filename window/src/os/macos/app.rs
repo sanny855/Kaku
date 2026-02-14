@@ -183,6 +183,44 @@ extern "C" fn application_open_file(
     NO
 }
 
+extern "C" fn application_open_files(
+    this: &mut Object,
+    _sel: Sel,
+    app: *mut Object,
+    file_names: *mut Object,
+) {
+    #[allow(non_upper_case_globals)]
+    const NSApplicationDelegateReplySuccess: NSInteger = 0;
+    #[allow(non_upper_case_globals)]
+    const NSApplicationDelegateReplyFailure: NSInteger = 2;
+
+    let mut reply = NSApplicationDelegateReplyFailure;
+    let launched: BOOL = unsafe { *this.get_ivar("launched") };
+    if launched == YES {
+        if let Some(conn) = Connection::get() {
+            let mut dispatched = false;
+            unsafe {
+                let count: NSInteger = msg_send![file_names, count];
+                for i in 0..count {
+                    let file_name: *mut Object = msg_send![file_names, objectAtIndex: i];
+                    let file_str = nsstring_to_str(file_name).to_string();
+                    log::debug!("application_open_files {file_str}");
+                    conn.dispatch_app_event(ApplicationEvent::OpenCommandScript(file_str));
+                    dispatched = true;
+                }
+            }
+            if dispatched {
+                reply = NSApplicationDelegateReplySuccess;
+            }
+        }
+    }
+
+    unsafe {
+        let target = if app.is_null() { NSApp() } else { app };
+        let _: () = msg_send![target, replyToOpenOrPrint: reply];
+    }
+}
+
 fn first_service_path(pasteboard: *mut Object) -> Option<String> {
     if pasteboard.is_null() {
         return None;
@@ -271,6 +309,11 @@ fn get_class() -> &'static Class {
                 sel!(application:openFile:),
                 application_open_file
                     as extern "C" fn(&mut Object, Sel, *mut Object, *mut Object) -> BOOL,
+            );
+            cls.add_method(
+                sel!(application:openFiles:),
+                application_open_files
+                    as extern "C" fn(&mut Object, Sel, *mut Object, *mut Object),
             );
             cls.add_method(
                 sel!(applicationDockMenu:),
