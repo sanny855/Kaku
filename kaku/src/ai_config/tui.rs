@@ -74,6 +74,9 @@ define_colors! {
 #[derive(Clone, Copy, PartialEq)]
 enum Tool {
     ClaudeCode,
+    Codex,
+    Gemini,
+    Copilot,
     OpenCode,
     OpenClaw,
 }
@@ -82,6 +85,9 @@ impl Tool {
     fn label(&self) -> &'static str {
         match self {
             Tool::ClaudeCode => "Claude Code",
+            Tool::Codex => "Codex",
+            Tool::Gemini => "Gemini CLI",
+            Tool::Copilot => "Copilot CLI",
             Tool::OpenCode => "OpenCode",
             Tool::OpenClaw => "OpenClaw",
         }
@@ -91,6 +97,9 @@ impl Tool {
         let home = config::HOME_DIR.clone();
         match self {
             Tool::ClaudeCode => home.join(".claude").join("settings.json"),
+            Tool::Codex => home.join(".codex").join("config.toml"),
+            Tool::Gemini => home.join(".gemini").join("settings.json"),
+            Tool::Copilot => home.join(".copilot").join("config.json"),
             Tool::OpenCode => home.join(".config").join("opencode").join("opencode.json"),
             Tool::OpenClaw => {
                 let new_path = home.join(".openclaw").join("openclaw.json");
@@ -107,7 +116,14 @@ impl Tool {
     }
 }
 
-const ALL_TOOLS: [Tool; 3] = [Tool::ClaudeCode, Tool::OpenCode, Tool::OpenClaw];
+const ALL_TOOLS: [Tool; 6] = [
+    Tool::ClaudeCode,
+    Tool::Codex,
+    Tool::Gemini,
+    Tool::Copilot,
+    Tool::OpenCode,
+    Tool::OpenClaw,
+];
 
 struct FieldEntry {
     key: String,
@@ -160,18 +176,46 @@ impl ToolState {
             }
         };
 
-        let parsed: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => {
-                let stripped = strip_jsonc_comments(&raw);
-                serde_json::from_str(&stripped).unwrap_or_default()
-            }
-        };
-
         let fields = match tool {
-            Tool::ClaudeCode => extract_claude_code_fields(&parsed),
-            Tool::OpenCode => extract_opencode_fields(&parsed),
-            Tool::OpenClaw => extract_openclaw_fields(&parsed),
+            Tool::ClaudeCode => {
+                let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        let stripped = strip_jsonc_comments(&raw);
+                        serde_json::from_str(&stripped).unwrap_or_default()
+                    }
+                };
+                extract_claude_code_fields(&parsed)
+            }
+            Tool::Codex => extract_codex_fields(&raw),
+            Tool::Gemini => {
+                let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+                extract_gemini_fields(&parsed)
+            }
+            Tool::Copilot => {
+                let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+                extract_copilot_fields(&parsed)
+            }
+            Tool::OpenCode => {
+                let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        let stripped = strip_jsonc_comments(&raw);
+                        serde_json::from_str(&stripped).unwrap_or_default()
+                    }
+                };
+                extract_opencode_fields(&parsed)
+            }
+            Tool::OpenClaw => {
+                let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        let stripped = strip_jsonc_comments(&raw);
+                        serde_json::from_str(&stripped).unwrap_or_default()
+                    }
+                };
+                extract_openclaw_fields(&parsed)
+            }
         };
 
         ToolState {
@@ -255,95 +299,125 @@ fn mask_key(val: &str) -> String {
     format!("{}...****", &val[..8])
 }
 
-fn env_str(val: &serde_json::Value, key: &str) -> String {
-    val.get("env")
-        .and_then(|e| e.get(key))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string()
+fn extract_claude_code_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
+    let model = json_str(val, "model");
+
+    vec![FieldEntry {
+        key: "Primary Model".into(),
+        value: if model.is_empty() {
+            "default".into()
+        } else {
+            model
+        },
+        options: vec![],
+        ..Default::default()
+    }]
 }
 
-fn extract_claude_code_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
-    let base_url = env_str(val, "ANTHROPIC_BASE_URL");
-    let auth_token = env_str(val, "ANTHROPIC_AUTH_TOKEN");
-    let sonnet_model = env_str(val, "ANTHROPIC_DEFAULT_SONNET_MODEL");
-    let opus_model = env_str(val, "ANTHROPIC_DEFAULT_OPUS_MODEL");
-    let haiku_model = env_str(val, "ANTHROPIC_DEFAULT_HAIKU_MODEL");
+fn extract_codex_fields(raw: &str) -> Vec<FieldEntry> {
+    let mut fields = Vec::new();
 
-    let mut model_options: Vec<String> = Vec::new();
-    for m in [&sonnet_model, &opus_model, &haiku_model] {
-        if !m.is_empty() && !model_options.contains(m) {
-            model_options.push(m.clone());
+    // Parse TOML manually for the fields we care about
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.starts_with('[') || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, val)) = line.split_once('=') {
+            let key = key.trim().trim_matches('"');
+            let val = val.trim().trim_matches('"');
+            match key {
+                "model" => {
+                    fields.push(FieldEntry {
+                        key: "Model".into(),
+                        value: val.to_string(),
+                        options: vec![],
+                        editable: false,
+                    });
+                }
+                "model_reasoning_effort" => {
+                    fields.push(FieldEntry {
+                        key: "Reasoning Effort".into(),
+                        value: val.to_string(),
+                        options: vec![],
+                        editable: false,
+                    });
+                }
+                _ => {}
+            }
         }
     }
 
-    vec![
-        FieldEntry {
-            key: "Primary Model".into(),
-            value: {
-                let v = json_str(val, "model");
-                if v.is_empty() {
-                    "default".into()
-                } else {
-                    v
-                }
-            },
-            options: model_options,
-            ..Default::default()
-        },
-        FieldEntry {
-            key: "Base URL".into(),
-            value: if base_url.is_empty() {
-                "—".into()
-            } else {
-                base_url
-            },
-            options: vec![],
-            ..Default::default()
-        },
-        FieldEntry {
-            key: "API Key".into(),
-            value: mask_key(&auth_token),
-            options: vec![],
-            ..Default::default()
-        },
-        FieldEntry {
-            key: "Models".into(),
-            value: String::new(),
+    // Check auth status from auth.json
+    let auth_path = config::HOME_DIR.join(".codex").join("auth.json");
+    if let Ok(auth_raw) = std::fs::read_to_string(&auth_path) {
+        if let Ok(auth) = serde_json::from_str::<serde_json::Value>(&auth_raw) {
+            let auth_mode = auth
+                .get("auth_mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !auth_mode.is_empty() {
+                fields.push(FieldEntry {
+                    key: "Auth".into(),
+                    value: format!("✓ connected ({})", auth_mode),
+                    options: vec![],
+                    editable: false,
+                });
+            }
+        }
+    }
+
+    fields
+}
+
+fn extract_gemini_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
+    let mut fields = Vec::new();
+
+    let auth_type = val
+        .get("security")
+        .and_then(|s| s.get("auth"))
+        .and_then(|a| a.get("selectedType"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if !auth_type.is_empty() {
+        fields.push(FieldEntry {
+            key: "Auth".into(),
+            value: format!("✓ connected ({})", auth_type),
             options: vec![],
             editable: false,
+        });
+    }
+
+    fields
+}
+
+fn extract_copilot_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
+    let model = json_str(val, "model");
+
+    let mut fields = vec![FieldEntry {
+        key: "Model".into(),
+        value: if model.is_empty() {
+            "default".into()
+        } else {
+            model
         },
-        FieldEntry {
-            key: "Models ▸ Sonnet".into(),
-            value: if sonnet_model.is_empty() {
-                "—".into()
-            } else {
-                sonnet_model
-            },
+        options: vec![],
+        editable: false,
+    }];
+
+    // Copilot authenticates via GitHub OAuth; session files indicate auth
+    let session_dir = config::HOME_DIR.join(".copilot").join("session-state");
+    if session_dir.exists() {
+        fields.push(FieldEntry {
+            key: "Auth".into(),
+            value: "✓ connected (github)".into(),
             options: vec![],
-            ..Default::default()
-        },
-        FieldEntry {
-            key: "Models ▸ Opus".into(),
-            value: if opus_model.is_empty() {
-                "—".into()
-            } else {
-                opus_model
-            },
-            options: vec![],
-            ..Default::default()
-        },
-        FieldEntry {
-            key: "Models ▸ Haiku".into(),
-            value: if haiku_model.is_empty() {
-                "—".into()
-            } else {
-                haiku_model
-            },
-            options: vec![],
-            ..Default::default()
-        },
-    ]
+            editable: false,
+        });
+    }
+
+    fields
 }
 
 fn extract_opencode_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
@@ -384,7 +458,63 @@ fn extract_opencode_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
         },
     ];
 
-    // Dynamically enumerate all providers
+    // Read auth.json for provider authentication status
+    let auth_path = config::HOME_DIR
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("auth.json");
+    if let Ok(auth_raw) = std::fs::read_to_string(&auth_path) {
+        if let Ok(auth) = serde_json::from_str::<serde_json::Value>(&auth_raw) {
+            if let Some(obj) = auth.as_object() {
+                // Sort: well-known providers first, then rest alphabetically
+                let priority = |name: &str| -> usize {
+                    match name {
+                        n if n.contains("claude") || n.contains("anthropic") => 0,
+                        "openai" => 1,
+                        "google" => 2,
+                        "github-copilot" => 3,
+                        _ => 4,
+                    }
+                };
+                let mut entries: Vec<_> = obj.iter().collect();
+                entries.sort_by(|(a, _), (b, _)| {
+                    let pa = priority(a);
+                    let pb = priority(b);
+                    pa.cmp(&pb).then_with(|| a.cmp(b))
+                });
+
+                for (name, entry) in entries {
+                    let auth_type = entry
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    let status = match auth_type.as_str() {
+                        "api" => {
+                            let key = entry
+                                .get("key")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            mask_key(key)
+                        }
+                        "oauth" => "✓ connected".into(),
+                        _ => auth_type.clone(),
+                    };
+
+                    fields.push(FieldEntry {
+                        key: name.clone(),
+                        value: format!("{} ({})", status, auth_type),
+                        options: vec![],
+                        editable: false,
+                    });
+                }
+            }
+        }
+    }
+
+    // Dynamically enumerate providers from config
     if let Some(providers) = val.get("provider").and_then(|p| p.as_object()) {
         for (name, prov) in providers {
             let opts = prov.get("options").unwrap_or(&serde_json::Value::Null);
@@ -579,7 +709,7 @@ fn extract_openclaw_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
                     key: format!("{} ▸ Models", name),
                     value: models_display,
                     options: vec![],
-                    ..Default::default()
+                    editable: false,
                 });
             }
         }
@@ -751,7 +881,12 @@ impl App {
             return;
         }
         self.editing = true;
-        self.edit_buf = field.value.clone();
+        // API Key fields show masked values; start with empty buffer to avoid saving the mask
+        self.edit_buf = if field.key.contains("API Key") {
+            String::new()
+        } else {
+            field.value.clone()
+        };
         self.focus = Focus::Editor;
     }
 
@@ -779,15 +914,10 @@ impl App {
 
         let field_key = tool.fields[self.field_index].key.clone();
         match save_field(tool.tool, &field_key, &new_val) {
-            Ok(()) => {
-                self.status_msg = Some(format!("Saved {} → {}", field_key, new_val));
-                self.reload_current_tool();
-            }
-            Err(e) => {
-                self.status_msg = Some(format!("Save failed: {}", e));
-                self.reload_current_tool();
-            }
+            Ok(()) => self.status_msg = Some(format!("Saved {} → {}", field_key, new_val)),
+            Err(e) => self.status_msg = Some(format!("Save failed: {}", e)),
         }
+        self.reload_current_tool();
     }
 
     fn cancel_select(&mut self) {
@@ -808,6 +938,13 @@ impl App {
         }
 
         let new_val = self.edit_buf.trim().to_string();
+        let field_key = tool.fields[self.field_index].key.clone();
+
+        // Empty input on API Key fields means cancel, not clear
+        if new_val.is_empty() && field_key.contains("API Key") {
+            return;
+        }
+
         let old_val = tool.fields[self.field_index].value.clone();
         if new_val == old_val {
             return;
@@ -815,32 +952,11 @@ impl App {
 
         tool.fields[self.field_index].value = new_val.clone();
 
-        let field_key = tool.fields[self.field_index].key.clone();
         match save_field(tool.tool, &field_key, &new_val) {
-            Ok(()) => {
-                self.status_msg = Some(format!("Saved {} → {}", field_key, new_val));
-
-                // Auto-sync Primary Model if a model env var was changed
-                if tool.tool == Tool::ClaudeCode
-                    && matches!(
-                        field_key.as_str(),
-                        "Models ▸ Sonnet" | "Models ▸ Opus" | "Models ▸ Haiku"
-                    )
-                {
-                    if let Some(base) = tool.fields.iter().find(|f| f.key == "Primary Model") {
-                        if base.value == old_val {
-                            let _ = save_field(Tool::ClaudeCode, "Primary Model", &new_val);
-                        }
-                    }
-                }
-
-                self.reload_current_tool();
-            }
-            Err(e) => {
-                self.status_msg = Some(format!("Save failed: {}", e));
-                self.reload_current_tool();
-            }
+            Ok(()) => self.status_msg = Some(format!("Saved {} → {}", field_key, new_val)),
+            Err(e) => self.status_msg = Some(format!("Save failed: {}", e)),
         }
+        self.reload_current_tool();
     }
 
     fn reload_current_tool(&mut self) {
@@ -886,49 +1002,22 @@ fn save_field(tool: Tool, field_key: &str, new_val: &str) -> anyhow::Result<()> 
         .with_context(|| format!("parse {}", path.display()))?;
 
     match tool {
+        Tool::Codex | Tool::Gemini | Tool::Copilot => return Ok(()),
         Tool::ClaudeCode => {
-            // Some fields are top-level, others live inside "env"
-            let env_key = match field_key {
-                "Models ▸ Sonnet" => Some("ANTHROPIC_DEFAULT_SONNET_MODEL"),
-                "Models ▸ Opus" => Some("ANTHROPIC_DEFAULT_OPUS_MODEL"),
-                "Models ▸ Haiku" => Some("ANTHROPIC_DEFAULT_HAIKU_MODEL"),
-                "Base URL" => Some("ANTHROPIC_BASE_URL"),
-                "API Key" => Some("ANTHROPIC_AUTH_TOKEN"),
-                _ => None,
-            };
             let top_key = match field_key {
-                "Primary Model" => Some("model"),
-                _ => None,
+                "Primary Model" => "model",
+                _ => return Ok(()),
             };
 
-            if let Some(ek) = env_key {
-                let obj = parsed.as_object_mut().context("root is not object")?;
-                let env = obj
-                    .entry("env")
-                    .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-                if let Some(env_obj) = env.as_object_mut() {
-                    if new_val == "—" || new_val.is_empty() {
-                        env_obj.remove(ek);
-                    } else {
-                        env_obj.insert(
-                            ek.to_string(),
-                            serde_json::Value::String(new_val.to_string()),
-                        );
-                    }
+            if let Some(obj) = parsed.as_object_mut() {
+                if new_val == "—" || new_val.is_empty() {
+                    obj.remove(top_key);
+                } else {
+                    obj.insert(
+                        top_key.to_string(),
+                        serde_json::Value::String(new_val.to_string()),
+                    );
                 }
-            } else if let Some(tk) = top_key {
-                if let Some(obj) = parsed.as_object_mut() {
-                    if new_val == "—" || new_val.is_empty() {
-                        obj.remove(tk);
-                    } else {
-                        obj.insert(
-                            tk.to_string(),
-                            serde_json::Value::String(new_val.to_string()),
-                        );
-                    }
-                }
-            } else {
-                return Ok(());
             }
         }
         Tool::OpenCode => {
@@ -1135,7 +1224,7 @@ fn sync_kaku_theme() -> anyhow::Result<String> {
         let raw = std::fs::read_to_string(&config_path).context("read opencode config")?;
         let mut parsed: serde_json::Value = serde_json::from_str(&raw)
             .or_else(|_| serde_json::from_str(&strip_jsonc_comments(&raw)))
-            .unwrap_or_default();
+            .context("parse opencode config")?;
         if let Some(obj) = parsed.as_object_mut() {
             obj.insert(
                 "theme".into(),
@@ -1284,7 +1373,7 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             ),
             Span::styled(tool.tool.label(), tool_style),
             Span::styled("  ", Style::default()),
-            Span::styled(short_path.clone(), Style::default().fg(MUTED())),
+            Span::styled(short_path, Style::default().fg(MUTED())),
             if !tool.installed {
                 Span::styled("  (not installed)", Style::default().fg(MUTED()))
             } else {
