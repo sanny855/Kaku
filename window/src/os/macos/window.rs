@@ -45,7 +45,7 @@ use raw_window_handle::{
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::ffi::{CStr, c_void};
+use std::ffi::{c_void, CStr};
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -53,7 +53,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use wezterm_font::FontConfiguration;
-use wezterm_input_types::{IntegratedTitleButtonStyle, KeyboardLedStatus, is_ascii_control};
+use wezterm_input_types::{is_ascii_control, IntegratedTitleButtonStyle, KeyboardLedStatus};
 
 static APP_TERMINATING: AtomicBool = AtomicBool::new(false);
 
@@ -63,8 +63,7 @@ const NSViewLayerContentsPlacementTopLeft: NSInteger = 11;
 const NSViewLayerContentsRedrawDuringViewResize: NSInteger = 2;
 const FULLSCREEN_ENTER_HIDE_CONTENT_MS: u64 = 30;
 const FULLSCREEN_EXIT_HIDE_CONTENT_MS: u64 = 20;
-const ZOOM_MAXIMIZE_HIDE_CONTENT_MS: u64 = 20;
-const ZOOM_RESTORE_HIDE_CONTENT_MS: u64 = 20;
+const ZOOM_HIDE_CONTENT_MS: u64 = 20;
 const NATIVE_EXIT_HIDE_CONTENT_MS: u64 = 50;
 const NATIVE_EXIT_POST_HIDE_CONTENT_MS: u64 = 20;
 const MOVE_PERSIST_DELAY_SECS: f64 = 0.35;
@@ -845,7 +844,10 @@ impl Window {
         } else {
             PersistedRestore::default()
         };
-        if explicit_initial_pos.is_none() && is_first_window && !persisted_restore.skip_persisted_size {
+        if explicit_initial_pos.is_none()
+            && is_first_window
+            && !persisted_restore.skip_persisted_size
+        {
             if let Some(size) = load_persisted_window_size() {
                 if size.width >= MIN_RESTORE_WIDTH && size.height >= MIN_RESTORE_HEIGHT {
                     width = size.width;
@@ -1806,7 +1808,7 @@ impl WindowInner {
 
     fn maximize(&mut self) {
         if !self.is_zoomed() {
-            self.arm_transition_content_hide(ZOOM_MAXIMIZE_HIDE_CONTENT_MS, "zoom_maximize", false);
+            self.arm_transition_content_hide(ZOOM_HIDE_CONTENT_MS, "zoom_maximize", false);
             unsafe {
                 NSWindow::zoom_(*self.window, nil);
             }
@@ -1815,7 +1817,7 @@ impl WindowInner {
 
     fn restore(&mut self) {
         if self.is_zoomed() {
-            self.arm_transition_content_hide(ZOOM_RESTORE_HIDE_CONTENT_MS, "zoom_restore", false);
+            self.arm_transition_content_hide(ZOOM_HIDE_CONTENT_MS, "zoom_restore", false);
             unsafe {
                 NSWindow::zoom_(*self.window, nil);
             }
@@ -2700,7 +2702,11 @@ impl WindowView {
     extern "C" fn has_marked_text(this: &mut Object, _sel: Sel) -> BOOL {
         if let Some(myself) = Self::get_this(this) {
             let inner = myself.inner.borrow();
-            if inner.ime_text.is_empty() { NO } else { YES }
+            if inner.ime_text.is_empty() {
+                NO
+            } else {
+                YES
+            }
         } else {
             NO
         }
@@ -4008,12 +4014,7 @@ impl WindowView {
             let fullscreen_involved = prior_window_state.contains(WindowState::FULL_SCREEN)
                 || window_state.contains(WindowState::FULL_SCREEN);
             if maximized_toggled && !fullscreen_involved {
-                let entering_maximized = window_state.contains(WindowState::MAXIMIZED);
-                let hide_ms = if entering_maximized {
-                    ZOOM_MAXIMIZE_HIDE_CONTENT_MS
-                } else {
-                    ZOOM_RESTORE_HIDE_CONTENT_MS
-                };
+                let hide_ms = ZOOM_HIDE_CONTENT_MS;
                 this.transition_hide_until
                     .set(Some(Instant::now() + Duration::from_millis(hide_ms)));
                 inner.paint_throttled = false;
