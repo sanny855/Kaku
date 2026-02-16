@@ -207,7 +207,12 @@ if ! command -v delta &>/dev/null; then
 		read -p "Install Delta for better git diffs? [Y/n] " -n 1 -r
 		echo
 		if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-			bash "$RESOURCE_DIR/install_delta.sh"
+			if ! bash "$RESOURCE_DIR/install_delta.sh"; then
+				echo ""
+				echo -e "${YELLOW}Delta installation failed.${NC}"
+				echo "You can retry later with:"
+				echo "  bash \"$RESOURCE_DIR/install_delta.sh\""
+			fi
 		fi
 	fi
 fi
@@ -216,6 +221,9 @@ persist_config_version
 
 echo ""
 echo -e "\033[1;32m🎃 Kaku environment is ready! Enjoy coding.\033[0m"
+echo ""
+echo "Press any key to continue..."
+read -n 1 -s
 
 # Start a new shell instead of exiting
 TARGET_SHELL="$(detect_login_shell)"
