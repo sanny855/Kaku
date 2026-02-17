@@ -1391,7 +1391,7 @@ fn ui(frame: &mut ratatui::Frame, app: &mut App) {
 
     let chunks = Layout::vertical([
         Constraint::Length(2), // logo header
-        Constraint::Min(4),   // tool list
+        Constraint::Min(4),    // tool list
         Constraint::Length(1), // status bar
     ])
     .split(area);

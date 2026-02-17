@@ -35,8 +35,8 @@ use config::keyassignment::{
 };
 use config::window::WindowLevel;
 use config::{
-    configuration, AudibleBell, ConfigHandle, Dimension, DimensionContext,
-    FrontEndSelection, GeometryOrigin, GuiPosition, TermConfig, WindowCloseConfirmation,
+    configuration, AudibleBell, ConfigHandle, Dimension, DimensionContext, FrontEndSelection,
+    GeometryOrigin, GuiPosition, TermConfig, WindowCloseConfirmation,
 };
 use lfucache::*;
 use mlua::{FromLua, LuaSerdeExt, UserData, UserDataFields};
