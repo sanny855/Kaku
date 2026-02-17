@@ -1,5 +1,5 @@
 use anyhow::Context;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -525,7 +525,7 @@ fn extract_opencode_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
                     let status = match auth_type.as_str() {
                         "api" => {
                             let key = entry.get("key").and_then(|v| v.as_str()).unwrap_or("");
-                            mask_key(key)
+                            format!("✓ {}", mask_key(key))
                         }
                         "oauth" => "✓ connected".into(),
                         _ => auth_type.clone(),
@@ -737,7 +737,7 @@ fn extract_openclaw_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
                     key: format!("{} ▸ Models", name),
                     value: models_display,
                     options: vec![],
-                    ..Default::default()
+                    editable: false,
                 });
             }
         }
@@ -1291,7 +1291,12 @@ fn sync_kaku_theme() -> anyhow::Result<String> {
 pub fn run() -> anyhow::Result<()> {
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen).context("enter alternate screen")?;
+    crossterm::execute!(
+        stdout,
+        EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture
+    )
+    .context("enter alternate screen")?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("create terminal")?;
 
@@ -1299,8 +1304,12 @@ pub fn run() -> anyhow::Result<()> {
     let result = run_loop(&mut terminal, &mut app);
 
     disable_raw_mode().context("disable raw mode")?;
-    crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)
-        .context("leave alternate screen")?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        crossterm::event::DisableMouseCapture
+    )
+    .context("leave alternate screen")?;
     terminal.show_cursor().context("show cursor")?;
 
     result
@@ -1313,55 +1322,59 @@ fn run_loop(
     loop {
         terminal.draw(|frame| ui(frame, app))?;
 
-        if let Event::Key(key) = event::read().context("read event")? {
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
+        match event::read().context("read event")? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                if app.selecting {
+                    match key.code {
+                        KeyCode::Enter => app.confirm_select(),
+                        KeyCode::Esc => app.cancel_select(),
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if app.select_index > 0 {
+                                app.select_index -= 1;
+                            }
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if app.select_index + 1 < app.select_options.len() {
+                                app.select_index += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
 
-            if app.selecting {
+                if app.editing {
+                    match key.code {
+                        KeyCode::Enter => app.confirm_edit(),
+                        KeyCode::Esc => app.cancel_edit(),
+                        KeyCode::Backspace => {
+                            app.edit_buf.pop();
+                        }
+                        KeyCode::Char(c) => app.edit_buf.push(c),
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 match key.code {
-                    KeyCode::Enter => app.confirm_select(),
-                    KeyCode::Esc => app.cancel_select(),
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if app.select_index > 0 {
-                            app.select_index -= 1;
-                        }
+                    KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.should_quit = true
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if app.select_index + 1 < app.select_options.len() {
-                            app.select_index += 1;
-                        }
-                    }
+                    KeyCode::Up | KeyCode::Char('k') => app.move_up(),
+                    KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+                    KeyCode::Enter => app.start_edit(),
+                    KeyCode::Char('t') => app.sync_theme(),
+                    KeyCode::Char('o') => app.open_config(),
                     _ => {}
                 }
-                continue;
             }
-
-            if app.editing {
-                match key.code {
-                    KeyCode::Enter => app.confirm_edit(),
-                    KeyCode::Esc => app.cancel_edit(),
-                    KeyCode::Backspace => {
-                        app.edit_buf.pop();
-                    }
-                    KeyCode::Char(c) => app.edit_buf.push(c),
-                    _ => {}
-                }
-                continue;
-            }
-
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.should_quit = true
-                }
-                KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-                KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-                KeyCode::Enter => app.start_edit(),
-                KeyCode::Char('t') => app.sync_theme(),
-                KeyCode::Char('o') => app.open_config(),
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => app.move_up(),
+                MouseEventKind::ScrollDown => app.move_down(),
                 _ => {}
-            }
+            },
+            _ => {}
         }
 
         if app.should_quit {
@@ -1373,30 +1386,37 @@ fn run_loop(
 fn ui(frame: &mut ratatui::Frame, app: &mut App) {
     let area = frame.area();
 
-    let outer = Block::default()
-        .title(Line::from(vec![
-            Span::styled(
-                " Kaku ",
-                Style::default().fg(PURPLE()).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("AI Tools ", Style::default().fg(TEXT())),
-        ]))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(PURPLE()))
-        .style(Style::default().bg(BG()));
-    let inner = outer.inner(area);
-    frame.render_widget(outer, area);
+    // Fill background
+    frame.render_widget(Block::default().style(Style::default().bg(BG())), area);
 
-    let chunks = Layout::vertical([Constraint::Min(6), Constraint::Length(1)]).split(inner);
+    let chunks = Layout::vertical([
+        Constraint::Length(2), // logo header
+        Constraint::Min(4),   // tool list
+        Constraint::Length(1), // status bar
+    ])
+    .split(area);
 
-    render_tools(frame, chunks[0], app);
-    render_status_bar(frame, chunks[1], app);
+    render_header(frame, chunks[0]);
+    render_tools(frame, chunks[1], app);
+    render_status_bar(frame, chunks[2], app);
 
     if app.selecting {
         render_selector(frame, area, app);
     } else if app.editing {
         render_editor(frame, area, app);
     }
+}
+
+fn render_header(frame: &mut ratatui::Frame, area: Rect) {
+    let line = Line::from(vec![
+        Span::styled(
+            "  Kaku",
+            Style::default().fg(PURPLE()).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · ", Style::default().fg(MUTED())),
+        Span::styled("AI Config", Style::default().fg(TEXT())),
+    ]);
+    frame.render_widget(Paragraph::new(vec![line, Line::from("")]), area);
 }
 
 fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -1466,6 +1486,15 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             let indent_str = if extra_indent { "    │  " } else { "    " };
             let key_width = if extra_indent { 21 } else { 24 };
 
+            // Prefix: ✓ already present for auth, · for read-only, none for editable
+            let val_prefix = if field.value.starts_with('✓') || field.value.starts_with('✗') {
+                ""
+            } else if !field.editable {
+                "· "
+            } else {
+                ""
+            };
+
             let line = Line::from(vec![
                 Span::styled(indent_str, Style::default().fg(MUTED())),
                 Span::styled(
@@ -1480,6 +1509,7 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                     format!("{:<width$}", display_key, width = key_width),
                     Style::default().fg(TEXT()),
                 ),
+                Span::styled(val_prefix, Style::default().fg(val_color)),
                 Span::styled(&field.value, Style::default().fg(val_color)),
             ]);
 
