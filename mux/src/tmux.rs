@@ -8,6 +8,7 @@ use crate::tmux_commands::{
 use crate::window::WindowId;
 use crate::{Mux, MuxWindowBuilder};
 use async_trait::async_trait;
+use config::keyassignment::PaneEncoding;
 use filedescriptor::FileDescriptor;
 use parking_lot::{Condvar, Mutex};
 use portable_pty::CommandBuilder;
@@ -367,6 +368,7 @@ impl Domain for TmuxDomain {
         _size: TerminalSize,
         _command: Option<CommandBuilder>,
         _command_dir: Option<String>,
+        _encoding: PaneEncoding,
         _window: WindowId,
     ) -> anyhow::Result<Arc<Tab>> {
         self.inner.create_tmux_window();
@@ -405,6 +407,7 @@ impl Domain for TmuxDomain {
         _size: TerminalSize,
         _command: Option<CommandBuilder>,
         _command_dir: Option<String>,
+        _encoding: PaneEncoding,
     ) -> anyhow::Result<Arc<dyn Pane>> {
         anyhow::bail!("Spawn_pane not yet implemented for TmuxDomain");
     }

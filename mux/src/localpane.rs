@@ -8,7 +8,7 @@ use crate::tmux::{TmuxDomain, TmuxDomainState};
 use crate::{Domain, Mux, MuxNotification};
 use anyhow::Error;
 use async_trait::async_trait;
-use config::keyassignment::ScrollbackEraseMode;
+use config::keyassignment::{PaneEncoding, ScrollbackEraseMode};
 use config::{configuration, ExitBehavior, ExitBehaviorMessaging};
 use fancy_regex::Regex;
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryInto;
 use std::io::{Result as IoResult, Write};
 use std::ops::Range;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use termwiz::escape::csi::{Sgr, CSI};
@@ -132,6 +133,7 @@ pub struct LocalPane {
     proc_list: Mutex<Option<CachedProcInfo>>,
     #[cfg(unix)]
     leader: Arc<Mutex<Option<CachedLeaderInfo>>>,
+    encoding: AtomicU8,
     command_description: String,
 }
 
@@ -177,6 +179,29 @@ impl Pane for LocalPane {
         } else {
             self.terminal.lock().get_keyboard_encoding()
         }
+    }
+
+    fn get_encoding(&self) -> PaneEncoding {
+        match self.encoding.load(Ordering::Relaxed) {
+            1 => PaneEncoding::Gbk,
+            2 => PaneEncoding::Gb18030,
+            3 => PaneEncoding::Big5,
+            4 => PaneEncoding::EucKr,
+            5 => PaneEncoding::ShiftJis,
+            _ => PaneEncoding::Utf8,
+        }
+    }
+
+    fn set_encoding(&self, encoding: PaneEncoding) {
+        let value = match encoding {
+            PaneEncoding::Utf8 => 0,
+            PaneEncoding::Gbk => 1,
+            PaneEncoding::Gb18030 => 2,
+            PaneEncoding::Big5 => 3,
+            PaneEncoding::EucKr => 4,
+            PaneEncoding::ShiftJis => 5,
+        };
+        self.encoding.store(value, Ordering::Relaxed);
     }
 
     fn get_current_seqno(&self) -> SequenceNo {
@@ -1005,6 +1030,7 @@ impl LocalPane {
         pty: Box<dyn MasterPty>,
         writer: Box<dyn Write + Send>,
         domain_id: DomainId,
+        encoding: PaneEncoding,
         command_description: String,
     ) -> Self {
         let (process, signaller, pid) = split_child(process);
@@ -1031,6 +1057,14 @@ impl LocalPane {
             proc_list: Mutex::new(None),
             #[cfg(unix)]
             leader: Arc::new(Mutex::new(None)),
+            encoding: AtomicU8::new(match encoding {
+                PaneEncoding::Utf8 => 0,
+                PaneEncoding::Gbk => 1,
+                PaneEncoding::Gb18030 => 2,
+                PaneEncoding::Big5 => 3,
+                PaneEncoding::EucKr => 4,
+                PaneEncoding::ShiftJis => 5,
+            }),
             command_description,
         }
     }

@@ -402,6 +402,7 @@ impl GuiFrontEnd {
                     SpawnTabDomain::DomainName("local".to_string()),
                     cmd,
                     cwd,
+                    None,
                     TerminalSize::default(),
                     pane_id,
                     workspace,

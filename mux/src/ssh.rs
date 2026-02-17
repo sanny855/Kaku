@@ -5,6 +5,7 @@ use crate::pane::{alloc_pane_id, Pane, PaneId};
 use crate::Mux;
 use anyhow::{anyhow, bail, Context};
 use async_trait::async_trait;
+use config::keyassignment::PaneEncoding;
 use config::{Shell, SshBackend, SshDomain};
 use filedescriptor::{poll, pollfd, socketpair, AsRawSocketDescriptor, FileDescriptor, POLLIN};
 use portable_pty::cmdbuilder::CommandBuilder;
@@ -704,6 +705,7 @@ impl Domain for RemoteSshDomain {
         size: TerminalSize,
         command: Option<CommandBuilder>,
         command_dir: Option<String>,
+        encoding: PaneEncoding,
     ) -> anyhow::Result<Arc<dyn Pane>> {
         let pane_id = alloc_pane_id();
 
@@ -757,7 +759,7 @@ impl Domain for RemoteSshDomain {
         // eg: tmux integration to be tunnelled via the remote
         // session without duplicating a lot of logic over here.
 
-        let writer = WriterWrapper::new(writer);
+        let writer = WriterWrapper::new(writer, encoding);
 
         let terminal = wezterm_term::Terminal::new(
             size,
@@ -774,6 +776,7 @@ impl Domain for RemoteSshDomain {
             pty,
             Box::new(writer),
             self.id,
+            encoding,
             "RemoteSshDomain".to_string(),
         ));
         let mux = Mux::get();

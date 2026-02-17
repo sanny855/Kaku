@@ -11,7 +11,8 @@ use crate::font::{
 };
 use crate::frontend::FrontEndSelection;
 use crate::keyassignment::{
-    KeyAssignment, KeyTable, KeyTableEntry, KeyTables, MouseEventTrigger, SpawnCommand,
+    KeyAssignment, KeyTable, KeyTableEntry, KeyTables, MouseEventTrigger, PaneEncoding,
+    SpawnCommand,
 };
 use crate::keys::{Key, LeaderKey, Mouse};
 use crate::lua::make_lua_context;
@@ -224,6 +225,9 @@ pub struct Config {
     /// through configuration or OSC 7 (see docs for `default_cwd` for more
     /// info!)
     pub default_cwd: Option<PathBuf>,
+
+    #[dynamic(default = "default_pane_encoding")]
+    pub default_encoding: PaneEncoding,
 
     #[dynamic(default)]
     pub exit_behavior: ExitBehavior,
@@ -1878,6 +1882,10 @@ fn default_bypass_mouse_reporting_modifiers() -> Modifiers {
 
 fn default_gui_startup_args() -> Vec<String> {
     vec!["start".to_string()]
+}
+
+fn default_pane_encoding() -> PaneEncoding {
+    PaneEncoding::Utf8
 }
 
 // Coupled with term/src/config.rs:TerminalConfiguration::unicode_version

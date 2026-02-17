@@ -7,12 +7,13 @@
 
 use crate::localpane::LocalPane;
 use crate::pane::{alloc_pane_id, Pane, PaneId};
+use crate::pane_encoding::PaneInputEncoder;
 use crate::tab::{SplitRequest, Tab, TabId};
 use crate::window::WindowId;
 use crate::Mux;
 use anyhow::{bail, Context, Error};
 use async_trait::async_trait;
-use config::keyassignment::{SpawnCommand, SpawnTabDomain};
+use config::keyassignment::{PaneEncoding, SpawnCommand, SpawnTabDomain};
 use config::{configuration, ExecDomain, SerialDomain, ValueOrFunc, WslDomain};
 use downcast_rs::{impl_downcast, Downcast};
 use parking_lot::Mutex;
@@ -54,10 +55,11 @@ pub trait Domain: Downcast + Send + Sync {
         size: TerminalSize,
         command: Option<CommandBuilder>,
         command_dir: Option<String>,
+        encoding: PaneEncoding,
         window: WindowId,
     ) -> anyhow::Result<Arc<Tab>> {
         let pane = self
-            .spawn_pane(size, command, command_dir)
+            .spawn_pane(size, command, command_dir, encoding)
             .await
             .context("spawn")?;
 
@@ -84,12 +86,12 @@ pub trait Domain: Downcast + Send + Sync {
             None => anyhow::bail!("Invalid tab id {}", tab),
         };
 
-        let pane_index = match tab
+        let (pane_index, source_encoding) = match tab
             .iter_panes_ignoring_zoom()
             .iter()
             .find(|p| p.pane.pane_id() == pane_id)
         {
-            Some(p) => p.index,
+            Some(p) => (p.index, p.pane.get_encoding()),
             None => anyhow::bail!("invalid pane id {}", pane_id),
         };
 
@@ -103,7 +105,7 @@ pub trait Domain: Downcast + Send + Sync {
                 command,
                 command_dir,
             } => {
-                self.spawn_pane(split_size.second, command, command_dir)
+                self.spawn_pane(split_size.second, command, command_dir, source_encoding)
                     .await?
             }
             SplitSource::MovePane(src_pane_id) => {
@@ -146,6 +148,7 @@ pub trait Domain: Downcast + Send + Sync {
         size: TerminalSize,
         command: Option<CommandBuilder>,
         command_dir: Option<String>,
+        encoding: PaneEncoding,
     ) -> anyhow::Result<Arc<dyn Pane>>;
 
     /// The mux will call this method on the domain of the pane that
@@ -333,6 +336,7 @@ impl LocalDomain {
                 args: if args.is_empty() { None } else { Some(args) },
                 set_environment_variables,
                 cwd,
+                encoding: None,
                 position: None,
             };
 
@@ -496,19 +500,25 @@ impl LocalDomain {
 #[derive(Clone)]
 pub(crate) struct WriterWrapper {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    encoding: PaneEncoding,
+    input_encoder: Arc<Mutex<PaneInputEncoder>>,
 }
 
 impl WriterWrapper {
-    pub fn new(writer: Box<dyn Write + Send>) -> Self {
+    pub fn new(writer: Box<dyn Write + Send>, encoding: PaneEncoding) -> Self {
         Self {
             writer: Arc::new(Mutex::new(writer)),
+            encoding,
+            input_encoder: Arc::new(Mutex::new(PaneInputEncoder::default())),
         }
     }
 }
 
 impl std::io::Write for WriterWrapper {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.writer.lock().write(buf)
+        let encoded = self.input_encoder.lock().encode(self.encoding, buf);
+        self.writer.lock().write_all(&encoded)?;
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -592,6 +602,7 @@ impl Domain for LocalDomain {
         size: TerminalSize,
         command: Option<CommandBuilder>,
         command_dir: Option<String>,
+        encoding: PaneEncoding,
     ) -> anyhow::Result<Arc<dyn Pane>> {
         let pane_id = alloc_pane_id();
         let cmd = self
@@ -616,7 +627,7 @@ impl Domain for LocalDomain {
             self.name
         );
         let child_result = pair.slave.spawn_command(cmd);
-        let mut writer = WriterWrapper::new(pair.master.take_writer()?);
+        let mut writer = WriterWrapper::new(pair.master.take_writer()?, encoding);
 
         let mut terminal = wezterm_term::Terminal::new(
             size,
@@ -637,6 +648,7 @@ impl Domain for LocalDomain {
                 pair.master,
                 Box::new(writer),
                 self.id,
+                encoding,
                 command_description,
             )),
             Err(err) => {
@@ -653,6 +665,7 @@ impl Domain for LocalDomain {
                     }),
                     Box::new(writer),
                     self.id,
+                    encoding,
                     command_description,
                 ))
             }

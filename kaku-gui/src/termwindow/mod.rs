@@ -30,8 +30,8 @@ use ::wezterm_term::input::{ClickPosition, MouseButton as TMB};
 use ::window::*;
 use anyhow::{anyhow, ensure, Context};
 use config::keyassignment::{
-    Confirmation, KeyAssignment, LauncherActionArgs, PaneDirection, Pattern, PromptInputLine,
-    QuickSelectArguments, RotationDirection, SpawnCommand, SplitSize,
+    Confirmation, KeyAssignment, LauncherActionArgs, PaneDirection, PaneEncoding, Pattern,
+    PromptInputLine, QuickSelectArguments, RotationDirection, SpawnCommand, SplitSize,
 };
 use config::window::WindowLevel;
 use config::{
@@ -3322,6 +3322,7 @@ impl TermWindow {
                                 ),
                                 None,
                                 None,
+                                config.default_encoding,
                                 window,
                             )
                             .await?;
@@ -3407,6 +3408,12 @@ impl TermWindow {
             PromptInputLine(args) => self.show_prompt_input_line(args),
             InputSelector(args) => self.show_input_selector(args),
             Confirmation(args) => self.show_confirmation(args),
+            SetPaneEncoding(encoding) => {
+                if let Some(pane) = self.get_active_pane_no_overlay() {
+                    let encoding: PaneEncoding = *encoding;
+                    pane.set_encoding(encoding);
+                }
+            }
         };
         Ok(PerformAssignmentResult::Handled)
     }
@@ -3632,8 +3639,8 @@ impl TermWindow {
 
     fn get_active_pane_no_overlay(&self) -> Option<Arc<dyn Pane>> {
         let mux = Mux::get();
-        mux.get_active_tab_for_window(self.mux_window_id)
-            .and_then(|tab| tab.get_active_pane())
+        let tab = mux.get_active_tab_for_window(self.mux_window_id)?;
+        tab.get_active_pane()
     }
 
     /// Returns a Pane that we can interact with; this will typically be

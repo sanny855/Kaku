@@ -1079,6 +1079,7 @@ async fn domain_spawn_v2(spawn: SpawnV2, client_id: Option<Arc<ClientId>>) -> an
             spawn.domain,
             spawn.command,
             spawn.command_dir,
+            None,
             spawn.size,
             None, // optional current pane_id
             spawn.workspace,

@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context};
-use config::keyassignment::SpawnCommand;
+use config::keyassignment::{PaneEncoding, SpawnCommand};
 use config::TermConfig;
 use mux::activity::Activity;
 use mux::domain::SplitSource;
@@ -57,16 +57,21 @@ pub async fn spawn_command_internal(
         None => None,
     };
 
-    let cwd = if let Some(cwd) = spawn.cwd.as_ref() {
-        Some(cwd.to_str().map(|s| s.to_owned()).ok_or_else(|| {
-            anyhow!(
-                "Domain::spawn requires that the cwd be unicode in {:?}",
-                cwd
-            )
-        })?)
-    } else {
-        None
-    };
+    let cwd = spawn.cwd.as_ref().map(|cwd| match cwd.to_str() {
+        Some(cwd) => cwd.to_owned(),
+        None => {
+            let lossy_cwd = cwd.to_string_lossy().into_owned();
+            log::warn!(
+                "non-unicode cwd {:?}; using lossy representation {:?}",
+                cwd,
+                lossy_cwd
+            );
+            lossy_cwd
+        }
+    });
+    let encoding: PaneEncoding = spawn
+        .encoding
+        .unwrap_or_else(|| config::configuration().default_encoding);
 
     let cmd_builder = match (
         spawn.args.as_ref(),
@@ -118,6 +123,7 @@ pub async fn spawn_command_internal(
                     .await
                     .context("split_pane")?;
                 pane.set_config(term_config);
+                pane.set_encoding(encoding);
             } else {
                 bail!("there is no active tab while splitting pane!?");
             }
@@ -132,6 +138,7 @@ pub async fn spawn_command_internal(
                     spawn.domain,
                     cmd_builder,
                     cwd,
+                    Some(encoding),
                     size,
                     current_pane_id,
                     workspace,

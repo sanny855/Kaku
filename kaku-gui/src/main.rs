@@ -197,6 +197,7 @@ async fn spawn_tab_in_domain_if_mux_is_empty(
             config.initial_size(dpi as u32, None),
             cmd,
             None,
+            config.default_encoding,
             window_id,
         )
         .await?;
@@ -364,6 +365,7 @@ async fn async_run_terminal_gui(
                     config.initial_size(dpi as u32, None),
                     cmd.clone(),
                     None,
+                    config.default_encoding,
                     window_id,
                 )
                 .await?;

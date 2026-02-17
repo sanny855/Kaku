@@ -11,7 +11,10 @@ use crate::overlay::quickselect;
 use crate::overlay::selector::{matcher_pattern, matcher_score};
 use crate::termwindow::TermWindowNotif;
 use config::configuration;
-use config::keyassignment::{KeyAssignment, SpawnCommand, SpawnTabDomain};
+use config::keyassignment::KeyAssignment::SetPaneEncoding;
+use config::keyassignment::{
+    KeyAssignment, LauncherActionArgs, PaneEncoding, SpawnCommand, SpawnTabDomain,
+};
 use mux::domain::{DomainId, DomainState};
 use mux::pane::PaneId;
 use mux::termwiztermtab::TermWizTerminal;
@@ -187,6 +190,7 @@ struct LauncherState {
     alphabet: String,
     selection: String,
     always_fuzzy: bool,
+    back_action: Option<KeyAssignment>,
 }
 
 impl LauncherState {
@@ -302,6 +306,15 @@ impl LauncherState {
                 },
                 action: KeyAssignment::ActivateTab(tab.tab_idx as isize),
             });
+        }
+
+        if args.flags.contains(LauncherFlags::PANE_ENCODINGS) {
+            for encoding in PaneEncoding::ordered_list() {
+                self.entries.push(Entry {
+                    label: format!("Set pane encoding to {encoding}"),
+                    action: SetPaneEncoding(encoding),
+                });
+            }
         }
 
         if args.flags.contains(LauncherFlags::COMMANDS) {
@@ -502,6 +515,19 @@ impl LauncherState {
         }
     }
 
+    fn back(&self) -> bool {
+        if let Some(assignment) = self.back_action.clone() {
+            self.window.notify(TermWindowNotif::PerformAssignment {
+                pane_id: self.pane_id,
+                assignment,
+                tx: None,
+            });
+            true
+        } else {
+            false
+        }
+    }
+
     fn run_loop(&mut self, term: &mut TermWizTerminal) -> anyhow::Result<()> {
         while let Ok(Some(event)) = term.poll_input(None) {
             match event {
@@ -571,6 +597,7 @@ impl LauncherState {
                     key: KeyCode::Escape,
                     ..
                 }) => {
+                    self.back();
                     break;
                 }
                 InputEvent::Key(KeyEvent {
@@ -651,6 +678,19 @@ pub fn launcher(
     initial_choice_idx: usize,
 ) -> anyhow::Result<()> {
     let filtering = args.flags.contains(LauncherFlags::FUZZY);
+    let mut submenu_flags = args.flags;
+    submenu_flags.remove(LauncherFlags::FUZZY);
+    let back_action = if submenu_flags == LauncherFlags::PANE_ENCODINGS {
+        Some(KeyAssignment::ShowLauncherArgs(LauncherActionArgs {
+            flags: LauncherFlags::COMMANDS,
+            title: Some("Pane Actions".to_string()),
+            help_text: None,
+            fuzzy_help_text: None,
+            alphabet: None,
+        }))
+    } else {
+        None
+    };
     let mut state = LauncherState {
         active_idx: initial_choice_idx,
         max_items: 0,
@@ -667,6 +707,7 @@ pub fn launcher(
         selection: String::new(),
         alphabet: args.alphabet.clone(),
         always_fuzzy: filtering,
+        back_action,
     };
 
     term.set_raw_mode()?;

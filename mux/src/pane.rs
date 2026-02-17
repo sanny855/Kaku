@@ -2,7 +2,7 @@ use crate::domain::DomainId;
 use crate::renderable::*;
 use crate::ExitBehavior;
 use async_trait::async_trait;
-use config::keyassignment::{KeyAssignment, ScrollbackEraseMode};
+use config::keyassignment::{KeyAssignment, PaneEncoding, ScrollbackEraseMode};
 use downcast_rs::{impl_downcast, Downcast};
 use parking_lot::MappedMutexGuard;
 use rangeset::RangeSet;
@@ -264,6 +264,12 @@ pub trait Pane: Downcast + Send + Sync {
     fn get_keyboard_encoding(&self) -> KeyboardEncoding {
         KeyboardEncoding::Xterm
     }
+
+    fn get_encoding(&self) -> PaneEncoding {
+        PaneEncoding::Utf8
+    }
+
+    fn set_encoding(&self, _encoding: PaneEncoding) {}
 
     fn copy_user_vars(&self) -> HashMap<String, String> {
         HashMap::new()

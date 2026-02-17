@@ -8,10 +8,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::Mutex;
 use wezterm_dynamic::{FromDynamic, FromDynamicOptions, ToDynamic, Value};
 use wezterm_input_types::{KeyCode, Modifiers};
 use wezterm_term::input::MouseButton;
 use wezterm_term::SemanticType;
+
+lazy_static::lazy_static! {
+    static ref LAST_PANE_ENCODING: Mutex<PaneEncoding> = Mutex::new(PaneEncoding::Utf8);
+}
 
 #[derive(Default, Debug, Clone, FromDynamic, ToDynamic, PartialEq, Eq)]
 pub struct LauncherActionArgs {
@@ -34,6 +40,7 @@ bitflags::bitflags! {
         const KEY_ASSIGNMENTS = 16;
         const WORKSPACES = 32;
         const COMMANDS = 64;
+        const PANE_ENCODINGS = 128;
     }
 }
 
@@ -73,6 +80,9 @@ impl ToString for LauncherFlags {
         if self.contains(Self::COMMANDS) {
             s.push("COMMANDS");
         }
+        if self.contains(Self::PANE_ENCODINGS) {
+            s.push("PANE_ENCODINGS");
+        }
         s.join("|")
     }
 }
@@ -92,6 +102,7 @@ impl TryFrom<String> for LauncherFlags {
                 "KEY_ASSIGNMENTS" => flags |= Self::KEY_ASSIGNMENTS,
                 "WORKSPACES" => flags |= Self::WORKSPACES,
                 "COMMANDS" => flags |= Self::COMMANDS,
+                "PANE_ENCODINGS" => flags |= Self::PANE_ENCODINGS,
                 _ => {
                     return Err(format!("invalid LauncherFlags `{}` in `{}`", ele, s));
                 }
@@ -170,6 +181,93 @@ impl Default for SpawnTabDomain {
     }
 }
 
+#[derive(
+    Debug, Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize, FromDynamic, ToDynamic,
+)]
+pub enum PaneEncoding {
+    #[default]
+    Utf8,
+    Gbk,
+    Gb18030,
+    Big5,
+    EucKr,
+    ShiftJis,
+}
+
+impl std::fmt::Display for PaneEncoding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.into_string())
+    }
+}
+
+impl FromStr for PaneEncoding {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let normalized = s.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "utf-8" | "utf8" => Ok(Self::Utf8),
+            "gbk" => Ok(Self::Gbk),
+            "gb18030" => Ok(Self::Gb18030),
+            "big5" => Ok(Self::Big5),
+            "euc-kr" | "euckr" => Ok(Self::EucKr),
+            "shift-jis" | "shift_jis" | "shiftjis" => Ok(Self::ShiftJis),
+            _ => Err(format!("invalid PaneEncoding `{s}`")),
+        }
+    }
+}
+
+impl PaneEncoding {
+    const DEFAULT_ORDER: [Self; 6] = [
+        Self::Utf8,
+        Self::Gbk,
+        Self::Gb18030,
+        Self::Big5,
+        Self::EucKr,
+        Self::ShiftJis,
+    ];
+
+    pub fn ordered_list() -> Vec<Self> {
+        let last_selected = *LAST_PANE_ENCODING
+            .lock()
+            .expect("LAST_PANE_ENCODING mutex poisoned");
+
+        if last_selected == Self::Utf8 {
+            return Self::DEFAULT_ORDER.to_vec();
+        }
+
+        let mut result = Vec::with_capacity(Self::DEFAULT_ORDER.len());
+        result.push(Self::Utf8);
+        result.push(last_selected);
+
+        for encoding in Self::DEFAULT_ORDER {
+            if encoding != Self::Utf8 && encoding != last_selected {
+                result.push(encoding);
+            }
+        }
+
+        result
+    }
+
+    pub fn set_last_selected(encoding: Self) {
+        *LAST_PANE_ENCODING
+            .lock()
+            .expect("LAST_PANE_ENCODING mutex poisoned") = encoding;
+    }
+
+    pub fn into_string(self) -> String {
+        match self {
+            Self::Utf8 => "UTF-8",
+            Self::Gbk => "GBK",
+            Self::Gb18030 => "GB18030",
+            Self::Big5 => "Big5",
+            Self::EucKr => "EUC-KR",
+            Self::ShiftJis => "Shift_JIS",
+        }
+        .to_string()
+    }
+}
+
 #[derive(Default, Clone, PartialEq, FromDynamic, ToDynamic)]
 pub struct SpawnCommand {
     /// Optional descriptive label
@@ -197,6 +295,9 @@ pub struct SpawnCommand {
     #[dynamic(default)]
     pub domain: SpawnTabDomain,
 
+    #[dynamic(default)]
+    pub encoding: Option<PaneEncoding>,
+
     pub position: Option<crate::GuiPosition>,
 }
 impl_lua_conversion_dynamic!(SpawnCommand);
@@ -222,6 +323,9 @@ impl std::fmt::Display for SpawnCommand {
         }
         for (k, v) in &self.set_environment_variables {
             write!(fmt, " {}={}", k, v)?;
+        }
+        if let Some(encoding) = &self.encoding {
+            write!(fmt, " encoding={encoding}")?;
         }
         Ok(())
     }
@@ -261,6 +365,7 @@ impl SpawnCommand {
             args: if args.is_empty() { None } else { Some(args) },
             set_environment_variables,
             cwd,
+            encoding: None,
             position: None,
         })
     }
@@ -598,6 +703,7 @@ pub enum KeyAssignment {
     ActivatePaneByIndex(usize),
     TogglePaneZoomState,
     SetPaneZoomState(bool),
+    SetPaneEncoding(PaneEncoding),
     CloseCurrentPane {
         confirm: bool,
     },
@@ -734,4 +840,58 @@ pub struct KeyTables {
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeyTableEntry {
     pub action: KeyAssignment,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PaneEncoding;
+    use std::sync::Mutex;
+
+    lazy_static::lazy_static! {
+        static ref TEST_LOCK: Mutex<()> = Mutex::new(());
+    }
+
+    #[test]
+    fn test_pane_encoding_order() {
+        let _guard = TEST_LOCK.lock().expect("TEST_LOCK mutex poisoned");
+
+        PaneEncoding::set_last_selected(PaneEncoding::Utf8);
+        assert_eq!(
+            PaneEncoding::ordered_list(),
+            vec![
+                PaneEncoding::Utf8,
+                PaneEncoding::Gbk,
+                PaneEncoding::Gb18030,
+                PaneEncoding::Big5,
+                PaneEncoding::EucKr,
+                PaneEncoding::ShiftJis,
+            ]
+        );
+
+        PaneEncoding::set_last_selected(PaneEncoding::Big5);
+        assert_eq!(
+            PaneEncoding::ordered_list(),
+            vec![
+                PaneEncoding::Utf8,
+                PaneEncoding::Big5,
+                PaneEncoding::Gbk,
+                PaneEncoding::Gb18030,
+                PaneEncoding::EucKr,
+                PaneEncoding::ShiftJis,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_pane_encoding_selection_persistence() {
+        let _guard = TEST_LOCK.lock().expect("TEST_LOCK mutex poisoned");
+
+        PaneEncoding::set_last_selected(PaneEncoding::Gb18030);
+        assert_eq!(PaneEncoding::ordered_list()[1], PaneEncoding::Gb18030);
+
+        PaneEncoding::set_last_selected(PaneEncoding::ShiftJis);
+        assert_eq!(PaneEncoding::ordered_list()[1], PaneEncoding::ShiftJis);
+
+        PaneEncoding::set_last_selected(PaneEncoding::Utf8);
+    }
 }

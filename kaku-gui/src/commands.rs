@@ -1,5 +1,5 @@
 use crate::inputmap::InputMap;
-use config::keyassignment::*;
+use config::keyassignment::{PaneEncoding, *};
 use config::window::WindowLevel;
 use config::{ConfigHandle, DeferredKeyCode};
 use mux::domain::DomainState;
@@ -1088,6 +1088,14 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &[],
             icon: Some("md_fullscreen"),
         },
+        SetPaneEncoding(encoding) => CommandDef {
+            brief: format!("Set Pane Encoding to {encoding}").into(),
+            doc: format!("Sets the current pane encoding to {encoding}").into(),
+            keys: vec![],
+            args: &[ArgType::ActivePane],
+            menubar: &["Shell", "Pane Encoding"],
+            icon: None,
+        },
         EmitEvent(name) => CommandDef {
             brief: format!("Emit event `{name}`").into(),
             doc: format!(
@@ -2064,7 +2072,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
 /// included in the default key assignments and command palette.
 fn compute_default_actions() -> Vec<KeyAssignment> {
     // These are ordered by their position within the various menus
-    return vec![
+    let mut actions = vec![
         // ----------------- Kaku
         #[cfg(target_os = "macos")]
         HideApplication,
@@ -2189,4 +2197,12 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         // ----------------- Misc
         OpenLinkAtMouseCursor,
     ];
+
+    actions.extend(
+        PaneEncoding::ordered_list()
+            .into_iter()
+            .map(KeyAssignment::SetPaneEncoding),
+    );
+
+    actions
 }

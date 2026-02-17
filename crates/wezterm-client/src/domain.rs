@@ -3,7 +3,7 @@ use crate::pane::ClientPane;
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use codec::{ListPanesResponse, SpawnV2, SplitPane};
-use config::keyassignment::SpawnTabDomain;
+use config::keyassignment::{PaneEncoding, SpawnTabDomain};
 use config::{SshDomain, TlsDomainClient, UnixDomain};
 use mux::connui::{ConnectionUI, ConnectionUIParams};
 use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
@@ -756,6 +756,7 @@ impl Domain for ClientDomain {
         _size: TerminalSize,
         _command: Option<CommandBuilder>,
         _command_dir: Option<String>,
+        _encoding: PaneEncoding,
     ) -> anyhow::Result<Arc<dyn Pane>> {
         anyhow::bail!("spawn_pane not implemented for ClientDomain")
     }
@@ -819,6 +820,7 @@ impl Domain for ClientDomain {
         size: TerminalSize,
         command: Option<CommandBuilder>,
         command_dir: Option<String>,
+        _encoding: PaneEncoding,
         window: WindowId,
     ) -> anyhow::Result<Arc<Tab>> {
         let inner = self

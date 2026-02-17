@@ -6,6 +6,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+fn utc_now() -> DateTime<Utc> {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    DateTime::from_timestamp(now.as_secs() as i64, now.subsec_nanos())
+        .expect("system time out of range")
+}
+
 static CLIENT_ID: AtomicUsize = AtomicUsize::new(0);
 lazy_static::lazy_static! {
     static ref EPOCH: u64 = SystemTime::now()
@@ -58,15 +66,15 @@ impl ClientInfo {
     pub fn new(client_id: Arc<ClientId>) -> Self {
         Self {
             client_id,
-            connected_at: Utc::now(),
+            connected_at: utc_now(),
             active_workspace: None,
-            last_input: Utc::now(),
+            last_input: utc_now(),
             focused_pane_id: None,
         }
     }
 
     pub fn update_last_input(&mut self) {
-        self.last_input = Utc::now();
+        self.last_input = utc_now();
     }
 
     pub fn update_focused_pane(&mut self, pane_id: PaneId) {

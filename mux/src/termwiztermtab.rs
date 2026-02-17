@@ -14,7 +14,7 @@ use crate::window::WindowId;
 use crate::Mux;
 use anyhow::bail;
 use async_trait::async_trait;
-use config::keyassignment::ScrollbackEraseMode;
+use config::keyassignment::{PaneEncoding, ScrollbackEraseMode};
 use crossbeam::channel::{unbounded as channel, Receiver, Sender};
 use filedescriptor::{FileDescriptor, Pipe};
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
@@ -53,6 +53,7 @@ impl Domain for TermWizTerminalDomain {
         _size: TerminalSize,
         _command: Option<CommandBuilder>,
         _command_dir: Option<String>,
+        _encoding: PaneEncoding,
     ) -> anyhow::Result<Arc<dyn Pane>> {
         bail!("cannot spawn panes in a TermWizTerminalPane");
     }
