@@ -55,11 +55,11 @@ echo "A fast, out-of-the-box terminal built for AI coding."
 echo "--------------------------------------------------------"
 echo "Would you like to install Kaku's enhanced shell features?"
 echo "This includes:"
-echo "  - Starship Prompt"
 echo "  - z - Smart Directory Jumper"
 echo "  - zsh-completions - Rich Tab Completions"
 echo "  - Zsh Syntax Highlighting"
 echo "  - Zsh Autosuggestions"
+echo "  - Optional CLI tools via Homebrew: Starship, Delta, Lazygit"
 echo ""
 echo "Shell config model:"
 echo "  - Kaku writes managed shell config to ~/.config/kaku/zsh/kaku.zsh"
@@ -159,13 +159,15 @@ if [[ "$INSTALL_THEME" == "true" ]]; then
 fi
 
 # Process optional CLI tool installation (single prompt)
-if [[ -f "$TOOLS_SCRIPT" ]]; then
-	echo ""
-	if ! bash "$TOOLS_SCRIPT"; then
-		echo "Warning: optional tool installation failed."
+if [[ "$INSTALL_SHELL" == "true" ]]; then
+	if [[ -f "$TOOLS_SCRIPT" ]]; then
+		echo ""
+		if ! bash "$TOOLS_SCRIPT"; then
+			echo "Warning: optional tool installation failed."
+		fi
+	else
+		echo "Warning: install_cli_tools.sh not found at $TOOLS_SCRIPT"
 	fi
-else
-	echo "Warning: install_cli_tools.sh not found at $TOOLS_SCRIPT"
 fi
 
 echo -e "\n\033[1;32m🎃 Kaku environment is ready! Enjoy coding.\033[0m"

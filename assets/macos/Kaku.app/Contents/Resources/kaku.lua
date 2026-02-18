@@ -466,7 +466,6 @@ local function launch_lazygit(window, pane)
     return
   end
 
-  mark_repo_lazygit_used(repo_root)
   local ok = pcall(function()
     window:perform_action(
       wezterm.action.SendString(lazygit_cmd .. "\r"),
@@ -475,7 +474,9 @@ local function launch_lazygit(window, pane)
   end)
   if not ok then
     show_lazygit_toast(window, pane, "kaku-toast-lazygit-dispatch-failed")
+    return
   end
+  mark_repo_lazygit_used(repo_root)
 end
 
 local function evict_stale_cache(live_pane_ids)
