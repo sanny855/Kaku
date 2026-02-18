@@ -265,6 +265,13 @@ impl RemoteSshDomain {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
 
+        // Remote servers won't have the "kaku" terminfo entry, which causes
+        // garbled display over SSH.  Override to xterm-256color so the remote
+        // side can handle cursor movement, line wrapping, etc. correctly.
+        if env.get("TERM").map(|t| t.as_str()) == Some("kaku") {
+            env.insert("TERM".to_string(), "xterm-256color".to_string());
+        }
+
         // FIXME: this isn't useful without a way to talk to the remote mux.
         // One option is to forward the mux via unix domain, another is to
         // embed the mux protocol in an escape sequence and just use the
