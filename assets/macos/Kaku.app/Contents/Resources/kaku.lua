@@ -1168,7 +1168,7 @@ config.mouse_bindings = {
 
 -- ===== Performance =====
 config.enable_scroll_bar = false
-config.front_end = 'OpenGL'
+config.front_end = 'WebGpu'
 config.webgpu_power_preference = 'HighPerformance'
 config.animation_fps = 60
 config.max_fps = 60

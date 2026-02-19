@@ -231,6 +231,11 @@ impl GlContextPair {
             // ... and then fallback to the deprecated platform provided CGL
             Err(err) => {
                 log::debug!("EGL init failed: {:#}, falling back to CGL", err);
+                // CGL doesn't need a layer-backed NSView. Keeping one around
+                // retains extra AppKit backing IOSurfaces for no benefit.
+                unsafe {
+                    let _: () = msg_send![view, setWantsLayer: NO];
+                }
                 let backend = Rc::new(cglbits::GlState::create(view)?);
                 let context =
                     unsafe { glium::backend::Context::new(Rc::clone(&backend), true, behavior) }?;
@@ -4039,8 +4044,10 @@ impl WindowView {
 
             let suppress_intermediate_resize = if native_transition_active {
                 match this.native_fullscreen_target.get() {
-                    // Enter: keep suppressing until did_enter to avoid showing scaled transition frames.
-                    Some(true) => true,
+                    // Enter: WebGpu keeps transition content hidden, so dispatching intermediate
+                    // resize updates avoids stale dimensions causing stretched/ghosted edges.
+                    // Keep legacy suppression for non-WebGpu backends.
+                    Some(true) => inner.config.front_end != config::FrontEndSelection::WebGpu,
                     // Exit: suppress only while hide window is active; then release updates early.
                     Some(false) => this
                         .transition_hide_until
@@ -4122,9 +4129,16 @@ impl WindowView {
 
     extern "C" fn make_backing_layer(view: &mut Object, _: Sel) -> id {
         log::trace!("make_backing_layer");
-        let class = class!(CAMetalLayer);
+        let use_metal_backing_layer = Self::get_this(view)
+            .map(|this| this.inner.borrow().config.front_end == config::FrontEndSelection::WebGpu)
+            .unwrap_or(false);
+        let class = if use_metal_backing_layer {
+            class!(CAMetalLayer)
+        } else {
+            class!(CALayer)
+        };
         unsafe {
-            // Use type method to get a instance of CAMetalLayer.
+            // Use type method to get a backing layer instance.
             // So that we don't have to worry about retaining/releasing it.
             let layer: id = msg_send![class, layer];
             let () = msg_send![layer, setDelegate: view];

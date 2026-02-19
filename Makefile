@@ -1,4 +1,4 @@
-.PHONY: all fmt fmt-check build app dev check test install-tools
+.PHONY: all fmt fmt-check build app dev check test install-tools test-webgpu-fallback
 
 all: build
 
@@ -52,3 +52,6 @@ install-tools:
 	cargo install cargo-watch --locked
 	rustup toolchain install nightly --component rustfmt
 	@echo "Tools installed."
+
+test-webgpu-fallback:
+	./scripts/test_webgpu_fallback.sh --strict

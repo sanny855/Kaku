@@ -978,19 +978,26 @@ impl TermWindow {
             }
         });
 
-        let gl = match config.front_end {
-            FrontEndSelection::WebGpu => None,
-            _ => Some(window.enable_opengl().await?),
+        let (gl, webgpu) = match config.front_end {
+            FrontEndSelection::WebGpu => match WebGpuState::new(&window, dimensions, &config).await
+            {
+                Ok(state) => (None, Some(Rc::new(state))),
+                Err(err) => {
+                    log::error!(
+                        "WebGpu initialization failed; falling back to OpenGL. Error: {:#}",
+                        err
+                    );
+                    let gl = window.enable_opengl().await.with_context(|| {
+                        "WebGpu initialization failed and OpenGL fallback also failed"
+                    })?;
+                    (Some(gl), None)
+                }
+            },
+            _ => (Some(window.enable_opengl().await?), None),
         };
 
         {
             let mut myself = tw.borrow_mut();
-            let webgpu = match config.front_end {
-                FrontEndSelection::WebGpu => Some(Rc::new(
-                    WebGpuState::new(&window, dimensions, &config).await?,
-                )),
-                _ => None,
-            };
             myself.config_subscription.replace(config_subscription);
             if config.use_resize_increments {
                 window.set_resize_increments(
