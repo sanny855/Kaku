@@ -24,16 +24,19 @@ format = " on [$symbol$branch(:$remote_branch)]($style)"
 format = "([\\[$all_status$ahead_behind\\]]($style))"
 
 [package]
-format = "is [$symbol$version]($style)"
+format = " is [$symbol$version]($style)"
 
 [cmd_duration]
-format = "took [$duration]($style)"
+format = " took [$duration]($style)"
 
 # Modules whose default format places trailing space INSIDE styled group
 # (e.g. bun, rust): override to also remove it, so only [character] provides
 # the trailing space.
 [rust]
-format = "via [$symbol($version)]($style)"
+format = " via [$symbol($version)]($style)"
+
+[python]
+format = " via [$symbol$version]($style)"
 
 [line_break]
 disabled = true
