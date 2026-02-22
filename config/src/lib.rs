@@ -10,14 +10,15 @@ use smol::prelude::*;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
-use std::fs::DirBuilder;
+use std::fs::{DirBuilder, OpenOptions};
+use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use wezterm_dynamic::{FromDynamic, FromDynamicOptions, ToDynamic, UnknownFieldAction, Value};
 use wezterm_term::UnicodeVersion;
 
@@ -479,7 +480,15 @@ pub fn user_config_path() -> PathBuf {
 pub fn ensure_user_config_exists() -> anyhow::Result<PathBuf> {
     let config_path = user_config_path();
     if config_path.exists() {
-        return Ok(config_path);
+        let metadata = std::fs::metadata(&config_path)
+            .with_context(|| format!("stat user config path {}", config_path.display()))?;
+        if metadata.is_file() {
+            return Ok(config_path);
+        }
+        bail!(
+            "user config path exists but is not a regular file: {}",
+            config_path.display()
+        );
     }
 
     let parent = config_path
@@ -487,9 +496,82 @@ pub fn ensure_user_config_exists() -> anyhow::Result<PathBuf> {
         .ok_or_else(|| anyhow!("invalid config path: {}", config_path.display()))?;
     create_user_owned_dirs(parent).context("create config directory")?;
 
-    std::fs::write(&config_path, minimal_user_config_template())
+    write_new_file_atomic(&config_path, minimal_user_config_template().as_bytes())
         .context("write minimal user config file")?;
     Ok(config_path)
+}
+
+fn write_new_file_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("invalid atomic write path: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("invalid atomic write file name: {}", path.display()))?;
+
+    let now_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+
+    let mut last_err = None;
+    for attempt in 0..8 {
+        let tmp_path = parent.join(format!(
+            ".{}.tmp-{}-{}-{}",
+            file_name, pid, now_nanos, attempt
+        ));
+
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(mut file) => {
+                if let Err(err) = (|| -> std::io::Result<()> {
+                    file.write_all(data)?;
+                    file.flush()?;
+                    Ok(())
+                })() {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(err).with_context(|| {
+                        format!("write temporary config file {}", tmp_path.display())
+                    });
+                }
+
+                if let Err(err) = std::fs::rename(&tmp_path, path) {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(err).with_context(|| {
+                        format!(
+                            "move temporary config file {} into place at {}",
+                            tmp_path.display(),
+                            path.display()
+                        )
+                    });
+                }
+
+                return Ok(());
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_err = Some(err);
+                continue;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("create temporary config file {}", tmp_path.display())
+                });
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "temporary config file path collision",
+        )
+    }))
+    .with_context(|| format!("allocate temporary config file for {}", path.display()))
 }
 
 fn minimal_user_config_template() -> &'static str {

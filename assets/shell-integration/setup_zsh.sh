@@ -194,6 +194,22 @@ setopt EXTENDED_HISTORY          # Include timestamps in saved history
 setopt interactive_comments
 bindkey -e
 
+# Prefix history search on Up/Down (e.g. type "curl" then press Up)
+# This is shell behavior, not terminal behavior, so Kaku configures it here.
+autoload -U up-line-or-beginning-search down-line-or-beginning-search
+zle -N up-line-or-beginning-search
+zle -N down-line-or-beginning-search
+zmodload zsh/terminfo 2>/dev/null || true
+for _kaku_keymap in emacs viins; do
+    [[ -n "\${terminfo[kcuu1]:-}" ]] && bindkey -M "\$_kaku_keymap" "\${terminfo[kcuu1]}" up-line-or-beginning-search
+    [[ -n "\${terminfo[kcud1]:-}" ]] && bindkey -M "\$_kaku_keymap" "\${terminfo[kcud1]}" down-line-or-beginning-search
+    bindkey -M "\$_kaku_keymap" '^[[A' up-line-or-beginning-search
+    bindkey -M "\$_kaku_keymap" '^[[B' down-line-or-beginning-search
+    bindkey -M "\$_kaku_keymap" '^[OA' up-line-or-beginning-search
+    bindkey -M "\$_kaku_keymap" '^[OB' down-line-or-beginning-search
+done
+unset _kaku_keymap
+
 # Kaku line-selection widgets for modified arrows in prompt editing.
 _kaku_select_left_char() {
     emulate -L zsh
@@ -628,8 +644,22 @@ END {
 
 cleanup_legacy_inline_block
 
+has_kaku_source_line() {
+	if [[ ! -f "$ZSHRC" ]]; then
+		return 1
+	fi
+
+	# Prefer exact match for the managed line to avoid false positives from comments.
+	if grep -Fqx "$SOURCE_LINE" "$ZSHRC"; then
+		return 0
+	fi
+
+	# Fallback: accept equivalent active source lines while avoiding comment-only matches.
+	grep -Eq '^[[:space:]]*\[\[ -f .+kaku/zsh/kaku\.zsh.+\]\][[:space:]]*&&[[:space:]]*source[[:space:]].*kaku/zsh/kaku\.zsh([[:space:]]|$)' "$ZSHRC"
+}
+
 # Check if the source line already exists
-if grep -q "kaku/zsh/kaku.zsh" "$ZSHRC" 2>/dev/null; then
+if has_kaku_source_line; then
 	echo -e "  ${GREEN}✓${NC} ${BOLD}Integrate${NC}   Already linked in .zshrc"
 else
 	# Backup existing .zshrc only if it doesn't have Kaku logic yet
