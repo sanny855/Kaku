@@ -6,8 +6,8 @@ use crossterm::event::{
     MouseEventKind,
 };
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -148,7 +148,7 @@ impl ToolState {
                         options: vec![],
                         ..Default::default()
                     }],
-                }
+                };
             }
         };
 
@@ -203,58 +203,118 @@ fn mask_key(val: &str) -> String {
     format!("{}...{}", &val[..12], &val[val.len() - 4..])
 }
 
+/// Configuration for the Kaku built-in AI assistant.
+///
+/// This struct holds the configuration for Kaku's AI-powered command analysis
+/// feature. It ensures that model and base_url always have valid values
+/// by falling back to defaults when empty strings are provided.
 #[derive(Debug, Clone)]
 struct KakuAssistantConfig {
+    /// Whether the AI assistant is enabled
     enabled: bool,
+    /// API key for the AI service (may be empty if not configured)
     api_key: String,
+    /// Model identifier (never empty, falls back to default)
     model: String,
+    /// Base URL for the API endpoint (never empty, falls back to default)
     base_url: String,
+}
+
+impl KakuAssistantConfig {
+    /// Creates a new configuration with the given values.
+    ///
+    /// # Arguments
+    /// * `enabled` - Whether the assistant is enabled
+    /// * `api_key` - API key (empty string if not set)
+    /// * `model` - Model identifier (empty strings will be replaced with default)
+    /// * `base_url` - Base URL (empty strings will be replaced with default)
+    fn new(
+        enabled: bool,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        base_url: impl Into<String>,
+    ) -> Self {
+        let model = model.into();
+        let base_url = base_url.into();
+        Self {
+            enabled,
+            api_key: api_key.into(),
+            model: if model.trim().is_empty() {
+                assistant_config::DEFAULT_MODEL.to_string()
+            } else {
+                model
+            },
+            base_url: if base_url.trim().is_empty() {
+                assistant_config::DEFAULT_BASE_URL.to_string()
+            } else {
+                base_url
+            },
+        }
+    }
+
+    /// Returns whether the assistant is enabled.
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Returns the API key (may be empty).
+    fn api_key(&self) -> &str {
+        &self.api_key
+    }
+
+    /// Returns the model identifier (never empty).
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Returns the base URL (never empty).
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
 }
 
 impl Default for KakuAssistantConfig {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            api_key: String::new(),
-            model: assistant_config::DEFAULT_MODEL.to_string(),
-            base_url: assistant_config::DEFAULT_BASE_URL.to_string(),
-        }
+        Self::new(true, String::new(), String::new(), String::new())
     }
 }
 
+/// Parses a KakuAssistantConfig from TOML content.
+///
+/// This function gracefully handles malformed TOML by using default values
+/// for any missing or invalid fields.
 fn parse_kaku_assistant_config(raw: &str) -> KakuAssistantConfig {
-    let mut cfg = KakuAssistantConfig::default();
     let parsed = raw
         .parse::<toml::Value>()
         .unwrap_or_else(|_| toml::Value::Table(Default::default()));
 
-    if let Some(enabled) = parsed.get("enabled").and_then(|v| v.as_bool()) {
-        cfg.enabled = enabled;
-    }
-    if let Some(api_key) = parsed.get("api_key").and_then(|v| v.as_str()) {
-        cfg.api_key = api_key.to_string();
-    }
-    if let Some(model) = parsed.get("model").and_then(|v| v.as_str()) {
-        if !model.trim().is_empty() {
-            cfg.model = model.to_string();
-        }
-    }
-    if let Some(base_url) = parsed.get("base_url").and_then(|v| v.as_str()) {
-        if !base_url.trim().is_empty() {
-            cfg.base_url = base_url.to_string();
-        }
-    }
-    cfg
+    let enabled = parsed
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let api_key = parsed.get("api_key").and_then(|v| v.as_str()).unwrap_or("");
+    let model = parsed.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    let base_url = parsed
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    KakuAssistantConfig::new(enabled, api_key, model, base_url)
 }
 
 fn get_kaku_assistant_api_key() -> Option<String> {
-    let path = assistant_config::ensure_assistant_toml_exists().ok()?;
-    let raw = std::fs::read_to_string(path).ok()?;
+    let path = assistant_config::ensure_assistant_toml_exists()
+        .map_err(|e| log::debug!("assistant config not available: {}", e))
+        .ok()?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| log::debug!("failed to read assistant config: {}", e))
+        .ok()?;
     let cfg = parse_kaku_assistant_config(&raw);
-    if cfg.api_key.trim().is_empty() {
+    if cfg.api_key().trim().is_empty() {
+        log::debug!("assistant config has no api_key set");
         None
     } else {
-        Some(cfg.api_key)
+        Some(cfg.api_key().to_string())
     }
 }
 
@@ -263,7 +323,7 @@ fn extract_kaku_assistant_fields(raw: &str) -> Vec<FieldEntry> {
     vec![
         FieldEntry {
             key: "Enabled".into(),
-            value: if cfg.enabled {
+            value: if cfg.is_enabled() {
                 "On".into()
             } else {
                 "Off".into()
@@ -273,19 +333,19 @@ fn extract_kaku_assistant_fields(raw: &str) -> Vec<FieldEntry> {
         },
         FieldEntry {
             key: "Model".into(),
-            value: cfg.model,
+            value: cfg.model().to_string(),
             options: vec![],
             editable: true,
         },
         FieldEntry {
             key: "Base URL".into(),
-            value: cfg.base_url,
+            value: cfg.base_url().to_string(),
             options: vec![],
             editable: true,
         },
         FieldEntry {
             key: "API Key".into(),
-            value: mask_key(&cfg.api_key),
+            value: mask_key(cfg.api_key()),
             options: vec![],
             editable: true,
         },
@@ -305,26 +365,26 @@ fn write_kaku_assistant_config(path: &Path, cfg: &KakuAssistantConfig) -> anyhow
     out.push_str("# api_key: provider API key, example: \"sk-xxxx\".\n");
     out.push_str("# model: model id, example: \"DeepSeek-V3.2\" or \"gpt-5-mini\".\n");
     out.push_str("# base_url: chat-completions API root URL.\n\n");
-    out.push_str(if cfg.enabled {
+    out.push_str(if cfg.is_enabled() {
         "enabled = true\n"
     } else {
         "enabled = false\n"
     });
-    if cfg.api_key.trim().is_empty() {
+    if cfg.api_key().trim().is_empty() {
         out.push_str("# api_key = \"<your_api_key>\"\n");
     } else {
         out.push_str(&format!(
             "api_key = {}\n",
-            render_toml_string(cfg.api_key.trim())
+            render_toml_string(cfg.api_key().trim())
         ));
     }
     out.push_str(&format!(
         "model = {}\n",
-        render_toml_string(cfg.model.trim())
+        render_toml_string(cfg.model().trim())
     ));
     out.push_str(&format!(
         "base_url = {}\n",
-        render_toml_string(cfg.base_url.trim())
+        render_toml_string(cfg.base_url().trim())
     ));
     write_atomic(path, out.as_bytes()).with_context(|| format!("write {}", path.display()))?;
     Ok(())
@@ -333,33 +393,40 @@ fn write_kaku_assistant_config(path: &Path, cfg: &KakuAssistantConfig) -> anyhow
 fn save_kaku_assistant_field(field_key: &str, new_val: &str) -> anyhow::Result<()> {
     let path = assistant_config::ensure_assistant_toml_exists()?;
     let raw = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut cfg = parse_kaku_assistant_config(&raw);
+    let cfg = parse_kaku_assistant_config(&raw);
 
-    match field_key {
+    // Build updated config based on which field changed
+    let updated = match field_key {
         "Enabled" => {
-            cfg.enabled = matches!(new_val.trim(), "On" | "on" | "true" | "1");
+            let enabled = matches!(new_val.trim(), "On" | "on" | "true" | "1");
+            KakuAssistantConfig::new(enabled, cfg.api_key(), cfg.model(), cfg.base_url())
         }
         "Model" => {
-            if new_val.trim().is_empty() || new_val == "—" {
-                cfg.model = assistant_config::DEFAULT_MODEL.to_string();
+            let model = if new_val.trim().is_empty() || new_val == "—" {
+                assistant_config::DEFAULT_MODEL
             } else {
-                cfg.model = new_val.trim().to_string();
-            }
+                new_val.trim()
+            };
+            KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), model, cfg.base_url())
         }
         "Base URL" => {
-            if new_val.trim().is_empty() || new_val == "—" {
-                cfg.base_url = assistant_config::DEFAULT_BASE_URL.to_string();
+            let base_url = if new_val.trim().is_empty() || new_val == "—" {
+                assistant_config::DEFAULT_BASE_URL
             } else {
-                cfg.base_url = new_val.trim().to_string();
-            }
+                new_val.trim()
+            };
+            KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), cfg.model(), base_url)
         }
-        "API Key" => {
-            cfg.api_key = new_val.trim().to_string();
-        }
+        "API Key" => KakuAssistantConfig::new(
+            cfg.is_enabled(),
+            new_val.trim(),
+            cfg.model(),
+            cfg.base_url(),
+        ),
         _ => return Ok(()),
-    }
+    };
 
-    write_kaku_assistant_config(&path, &cfg)
+    write_kaku_assistant_config(&path, &updated)
 }
 
 /// Get OpenAI account email from JWT token in auth.json
