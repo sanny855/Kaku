@@ -51,6 +51,7 @@ impl TerminalState {
         } else {
             log::trace!("{}: sending {:?}, {:?} {:?}", label, to_send, key, mods);
         }
+
         self.writer.write_all(to_send.as_bytes())?;
         self.writer.flush()?;
 
