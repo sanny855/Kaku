@@ -24,10 +24,15 @@ pub type SetupFunc = fn(&Lua) -> anyhow::Result<()>;
 
 lazy_static::lazy_static! {
     static ref SETUP_FUNCS: Mutex<Vec<SetupFunc>> = Mutex::new(vec![]);
+    static ref DEFERRED_SETUP_FUNCS: Mutex<Vec<SetupFunc>> = Mutex::new(vec![]);
 }
 
 pub fn add_context_setup_func(func: SetupFunc) {
     SETUP_FUNCS.lock().unwrap().push(func);
+}
+
+pub fn add_deferred_setup_func(func: SetupFunc) {
+    DEFERRED_SETUP_FUNCS.lock().unwrap().push(func);
 }
 
 pub fn get_or_create_module<'lua>(lua: &'lua Lua, name: &str) -> anyhow::Result<mlua::Table<'lua>> {
@@ -383,6 +388,47 @@ end
 
     for func in SETUP_FUNCS.lock().unwrap().iter() {
         func(&lua).context("calling SETUP_FUNCS")?;
+    }
+
+    // Install __index metamethod on the wezterm module that lazily runs
+    // deferred setup functions on first access to an unknown key.
+    {
+        let deferred = DEFERRED_SETUP_FUNCS.lock().unwrap().clone();
+        if !deferred.is_empty() {
+            let wezterm_mod = get_or_create_module(&lua, "wezterm")?;
+            let mt = wezterm_mod.get_metatable().unwrap_or_else(|| {
+                let mt = lua.create_table().unwrap();
+                wezterm_mod.set_metatable(Some(mt.clone()));
+                mt
+            });
+
+            // Store the deferred funcs as a Lua registry value so the closure
+            // can access them.
+            lua.set_named_registry_value(
+                "wezterm-deferred-setup",
+                lua.create_function({
+                    let deferred = deferred.clone();
+                    move |lua, (table, key): (mlua::Table, mlua::String)| {
+                        // Run all deferred setup functions once
+                        for func in &deferred {
+                            if let Err(err) = func(lua) {
+                                log::error!("deferred setup func error: {:#}", err);
+                            }
+                        }
+                        // Remove the __index metamethod so we don't re-trigger
+                        if let Some(mt) = table.get_metatable() {
+                            let _: mlua::Result<()> = mt.raw_set("__index", mlua::Value::Nil);
+                        }
+                        // Now look up the key again
+                        let val: mlua::Value = table.raw_get(key)?;
+                        Ok(val)
+                    }
+                })?,
+            )?;
+
+            let index_fn: mlua::Function = lua.named_registry_value("wezterm-deferred-setup")?;
+            mt.set("__index", index_fn)?;
+        }
     }
 
     Ok(lua)

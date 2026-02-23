@@ -186,23 +186,30 @@ fn register_panic_hook() {
 }
 
 fn register_lua_modules() {
+    // Essential modules needed by kaku.lua during config evaluation
     for func in [
-        battery::register,
         color_funcs::register,
         termwiz_funcs::register,
         logging::register,
         mux_lua::register,
-        procinfo_funcs::register,
         filesystem::register,
         serde_funcs::register,
-        plugin::register,
-        ssh_funcs::register,
         spawn_funcs::register,
         share_data::register,
         time_funcs::register,
-        url_funcs::register,
     ] {
         config::lua::add_context_setup_func(func);
+    }
+
+    // Deferred modules loaded lazily on first access
+    for func in [
+        battery::register,
+        plugin::register,
+        ssh_funcs::register,
+        url_funcs::register,
+        procinfo_funcs::register,
+    ] {
+        config::lua::add_deferred_setup_func(func);
     }
 }
 

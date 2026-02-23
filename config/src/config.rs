@@ -1113,6 +1113,42 @@ impl Config {
         Ok(loaded)
     }
 
+    /// Compute the bytecode cache path for a given config source file.
+    fn bytecode_cache_path(source: &Path) -> PathBuf {
+        // Use a hash of the source path to avoid collisions
+        let hash = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            source.hash(&mut hasher);
+            hasher.finish()
+        };
+        crate::CACHE_DIR.join(format!("lua_bytecode_{:016x}.bin", hash))
+    }
+
+    /// Try to load bytecode from cache if it is newer than the source file.
+    fn try_load_bytecode_cache(source: &Path) -> Option<Vec<u8>> {
+        let cache_path = Self::bytecode_cache_path(source);
+        let source_mtime = std::fs::metadata(source).ok()?.modified().ok()?;
+        let cache_meta = std::fs::metadata(&cache_path).ok()?;
+        let cache_mtime = cache_meta.modified().ok()?;
+        if cache_mtime > source_mtime {
+            std::fs::read(&cache_path).ok()
+        } else {
+            None
+        }
+    }
+
+    /// Save compiled bytecode to the cache.
+    fn save_bytecode_cache(source: &Path, bytecode: &[u8]) {
+        let cache_path = Self::bytecode_cache_path(source);
+        if let Some(parent) = cache_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(err) = std::fs::write(&cache_path, bytecode) {
+            log::trace!("failed to write bytecode cache: {:#}", err);
+        }
+    }
+
     fn try_load(
         path_item: &PathPossibility,
         overrides: &wezterm_dynamic::Value,
@@ -1131,19 +1167,15 @@ impl Config {
         file.read_to_string(&mut s)?;
         let lua = make_lua_context(p)?;
 
+        // Try loading from bytecode cache first
+        let cached_bytecode = Self::try_load_bytecode_cache(p);
+
         let (config, warnings) =
             wezterm_dynamic::Error::capture_warnings(|| -> anyhow::Result<Config> {
-                let config: mlua::Value = smol::block_on(
-                    // Skip a potential BOM that Windows software may have placed in the
-                    // file. Note that we can't catch this happening for files that are
-                    // imported via the lua require function.
-                    lua.load(s.trim_start_matches('\u{FEFF}'))
-                        .set_name(p.to_string_lossy())
-                        .eval_async(),
-                )
-                .map_err(|e| {
+                let source_text = s.trim_start_matches('\u{FEFF}');
+
+                let map_lua_err = |e: mlua::Error| -> anyhow::Error {
                     let err_str = format!("{}", e);
-                    // Detect common mistake: using `config.xxx` without defining `config` first
                     if err_str.contains("attempt to index a nil value")
                         && err_str.contains("global 'config'")
                     {
@@ -1166,7 +1198,40 @@ impl Config {
                     } else {
                         anyhow::anyhow!("{}", e)
                     }
-                })?;
+                };
+
+                let config: mlua::Value = if let Some(ref bytecode) = cached_bytecode {
+                    match smol::block_on(
+                        lua.load(bytecode.as_slice())
+                            .set_name(p.to_string_lossy())
+                            .eval_async::<mlua::Value>(),
+                    ) {
+                        Ok(val) => val,
+                        Err(_) => {
+                            // Cache is corrupt or incompatible, fall back to source
+                            log::trace!("bytecode cache miss, loading from source");
+                            smol::block_on(
+                                lua.load(source_text)
+                                    .set_name(p.to_string_lossy())
+                                    .eval_async::<mlua::Value>(),
+                            )
+                            .map_err(&map_lua_err)?
+                        }
+                    }
+                } else {
+                    // No cache, load from source and dump bytecode for next time.
+                    // Compile to a function first so we can extract bytecode.
+                    let func = lua
+                        .load(source_text)
+                        .set_name(p.to_string_lossy())
+                        .into_function()
+                        .map_err(&map_lua_err)?;
+                    let bytecode = func.dump(true);
+                    Self::save_bytecode_cache(p, &bytecode);
+                    smol::block_on(func.call_async::<_, mlua::Value>(()))
+                        .map_err(&map_lua_err)?
+                };
+
                 let config = Config::apply_overrides_to(&lua, config)?;
                 let config = Config::apply_overrides_obj_to(&lua, config, overrides)?;
                 let cfg = Config::from_lua(config, &lua).with_context(|| {
@@ -1429,13 +1494,15 @@ impl Config {
         // references a scheme not already defined inline.  This avoids
         // directory enumeration + TOML parsing on every startup for users
         // who don't use custom .toml color scheme files.
-        let need_disk_schemes = cfg
-            .color_scheme
-            .as_ref()
-            .map_or(false, |name| !cfg.color_schemes.contains_key(name.as_str()));
-        if need_disk_schemes {
-            cfg.load_color_schemes(&cfg.compute_color_scheme_dirs())
-                .ok();
+        if let Some(scheme_name) = cfg.color_scheme.clone() {
+            if !cfg.color_schemes.contains_key(scheme_name.as_str()) {
+                let dirs = cfg.compute_color_scheme_dirs();
+                // Fast path: try to load just the matching .toml file by name
+                // before falling back to a full directory scan.
+                if !cfg.try_load_single_color_scheme(&scheme_name, &dirs) {
+                    cfg.load_color_schemes(&dirs).ok();
+                }
+            }
         }
 
         if let Some(scheme) = cfg.color_scheme.as_ref() {
@@ -1478,6 +1545,40 @@ impl Config {
             }
         }
         paths
+    }
+
+    /// Try to load a single color scheme by name from the given directories.
+    /// Returns true if the scheme was found and loaded.
+    fn try_load_single_color_scheme(&mut self, scheme_name: &str, paths: &[PathBuf]) -> bool {
+        let file_name = format!("{}.toml", scheme_name);
+        for dir in paths {
+            let path = dir.join(&file_name);
+            if path.is_file() {
+                match std::fs::read_to_string(&path)
+                    .context("reading color scheme")
+                    .and_then(|s| ColorSchemeFile::from_toml_str(&s).context("parsing TOML"))
+                {
+                    Ok(scheme) => {
+                        let name = scheme
+                            .metadata
+                            .name
+                            .unwrap_or_else(|| scheme_name.to_string());
+                        self.color_schemes.insert(name, scheme.colors);
+                        if self.color_schemes.contains_key(scheme_name) {
+                            return true;
+                        }
+                    }
+                    Err(err) => {
+                        log::error!(
+                            "Color scheme in `{}` failed to load: {:#}",
+                            path.display(),
+                            err
+                        );
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn load_color_schemes(&mut self, paths: &[PathBuf]) -> anyhow::Result<()> {
