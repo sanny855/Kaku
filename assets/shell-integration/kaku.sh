@@ -36,6 +36,15 @@ case "$TERM" in
   ;;
 esac
 
+# Remote machines typically don't have the "kaku" terminfo entry, so when
+# SSHing from a Kaku local shell (TERM=kaku), zsh plugins on the remote side
+# (autosuggestions, syntax-highlighting) fall back to broken rendering paths,
+# causing garbled display (e.g. "ls -lh" appearing as "lss s -lh").
+# Override TERM for ssh sessions the same way Kaku's built-in SSH domain does.
+if [[ "${TERM:-}" == "kaku" ]]; then
+  ssh() { TERM=xterm-256color command ssh "$@"; }
+fi
+
 # This function wraps bash-preexec.sh so that it can be included verbatim
 # in this file, even though it uses `return` to short-circuit in some cases.
 __wezterm_install_bash_prexec() {
