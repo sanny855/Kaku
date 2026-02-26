@@ -118,7 +118,7 @@ impl TerminalState {
             self.writer.flush()?;
         } else if self.mouse_tracking || self.button_event_mouse || self.any_event_mouse {
             self.encode_x10_or_utf8(event, button)?;
-        } else if self.screen.is_alt_screen_active() {
+        } else if self.screen.is_alt_screen_active() || self.alternate_scroll {
             // Send cursor keys instead (equivalent to xterm's alternateScroll mode)
             for _ in 0..self.config.alternate_buffer_wheel_scroll_speed() {
                 self.key_down(

@@ -325,6 +325,7 @@ pub struct TerminalState {
     /// reporting is enabled
     mouse_encoding: MouseEncoding,
     mouse_tracking: bool,
+    alternate_scroll: bool,
     /// Button events enabled
     button_event_mouse: bool,
     current_mouse_buttons: Vec<MouseButton>,
@@ -557,6 +558,7 @@ impl TerminalState {
             any_event_mouse: false,
             button_event_mouse: false,
             mouse_tracking: false,
+            alternate_scroll: false,
             last_mouse_move: None,
             cursor_visible: true,
             g0_charset: CharSet::Ascii,
@@ -763,7 +765,10 @@ impl TerminalState {
     /// This is useful for the hosting GUI application to decide how best
     /// to dispatch mouse events to the terminal.
     pub fn is_mouse_grabbed(&self) -> bool {
-        self.mouse_tracking || self.button_event_mouse || self.any_event_mouse
+        self.mouse_tracking
+            || self.button_event_mouse
+            || self.any_event_mouse
+            || self.alternate_scroll
     }
 
     pub fn is_alt_screen_active(&self) -> bool {
@@ -1299,6 +1304,7 @@ impl TerminalState {
                 self.application_cursor_keys = false;
                 self.modify_other_keys = None;
                 self.application_keypad = false;
+                self.alternate_scroll = false;
                 self.top_and_bottom_margins = 0..self.screen().physical_rows as i64;
                 self.left_and_right_margins = 0..self.screen().physical_cols;
                 self.left_and_right_margin_mode = false;
@@ -1868,6 +1874,19 @@ impl TerminalState {
                         _ => false,
                     },
                 );
+            }
+            Mode::SetDecPrivateMode(DecPrivateMode::Code(DecPrivateModeCode::AlternateScroll)) => {
+                self.alternate_scroll = true;
+            }
+            Mode::ResetDecPrivateMode(DecPrivateMode::Code(
+                DecPrivateModeCode::AlternateScroll,
+            )) => {
+                self.alternate_scroll = false;
+            }
+            Mode::QueryDecPrivateMode(DecPrivateMode::Code(
+                DecPrivateModeCode::AlternateScroll,
+            )) => {
+                self.decqrm_response(mode, true, self.alternate_scroll);
             }
             Mode::SetDecPrivateMode(DecPrivateMode::Code(DecPrivateModeCode::SGRPixelsMouse)) => {
                 self.mouse_encoding = MouseEncoding::SgrPixels;

@@ -1506,3 +1506,25 @@ fn test_primary_peek_no_leak_across_sessions() {
         "peek should not remain after multiple rounds"
     );
 }
+
+#[test]
+fn test_alternate_scroll_mode_marks_mouse_grabbed() {
+    let mut term = TestTerm::new(5, 10, 100);
+    assert!(!term.is_mouse_grabbed());
+
+    term.set_mode("?1007", true);
+    assert!(term.is_mouse_grabbed());
+
+    term.set_mode("?1007", false);
+    assert!(!term.is_mouse_grabbed());
+}
+
+#[test]
+fn test_alternate_scroll_mode_cleared_on_soft_reset() {
+    let mut term = TestTerm::new(5, 10, 100);
+    term.set_mode("?1007", true);
+    assert!(term.is_mouse_grabbed());
+
+    term.soft_reset();
+    assert!(!term.is_mouse_grabbed());
+}
