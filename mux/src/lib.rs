@@ -317,7 +317,9 @@ fn read_from_pane_pty(
     });
 
     if let Some(banner) = banner {
-        tx.write_all(banner.as_bytes()).ok();
+        if let Err(err) = tx.write_all(banner.as_bytes()) {
+            log::warn!("failed to write startup banner to pane parser: {err:#}");
+        }
     }
 
     while !dead.load(Ordering::Relaxed) {

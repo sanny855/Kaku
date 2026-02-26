@@ -656,7 +656,9 @@ impl Domain for LocalDomain {
             )),
             Err(err) => {
                 // Show the error to the user in the new pane
-                write!(writer, "{err:#}").ok();
+                if let Err(write_err) = write!(writer, "{err:#}") {
+                    log::warn!("failed to write process spawn error into pane: {write_err:#}");
+                }
 
                 // and return a dummy pane that has exited
                 Arc::new(LocalPane::new(
