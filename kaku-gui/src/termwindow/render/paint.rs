@@ -11,6 +11,7 @@ use ::window::WindowOps;
 use anyhow::Context;
 use config::Dimension;
 use smol::Timer;
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use wezterm_font::ClearShapeCache;
 use window::color::LinearRgba;
@@ -403,19 +404,29 @@ impl crate::TermWindow {
                     pos.pane.advise_focus();
                     mux::Mux::get().record_focus_for_current_identity(pos.pane.pane_id());
                 }
+                // Clear unread bell when pane becomes active (covers mouse click, tab switch, etc.)
+                self.pane_state(pos.pane.pane_id()).has_unread_bell = false;
             }
             self.paint_pane(&pos, &mut layers).context("paint_pane")?;
         }
 
+        static CIRCLE_POLY: &[Poly] = &[Poly {
+            path: &[PolyCommand::Circle {
+                center: (BlockCoord::Frac(1, 2), BlockCoord::Frac(1, 2)),
+                radius: BlockCoord::Frac(1, 2),
+            }],
+            intensity: BlockAlpha::Full,
+            style: PolyStyle::Fill,
+        }];
+
+        const DOT_SIZE: f32 = 10.0;
+        const RIGHT_INSET: f32 = 3.0;
+        const TOP_PANE_MARGIN_WITH_TAB_BAR: f32 = 24.0;
+        const TOP_PANE_MARGIN_NO_TAB_BAR: f32 = 14.0;
+        const LOWER_PANE_MARGIN: f32 = 20.0;
+
         // Draw dot indicator for the active pane when split
         if let Some((dot_x, dot_y, is_top_pane)) = active_pane_top_right {
-            const DOT_SIZE: f32 = 10.0;
-            const DOT_ALPHA: f32 = 0.5;
-            const RIGHT_INSET: f32 = 3.0;
-            const TOP_PANE_MARGIN_WITH_TAB_BAR: f32 = 24.0;
-            const TOP_PANE_MARGIN_NO_TAB_BAR: f32 = 14.0;
-            const LOWER_PANE_MARGIN: f32 = 20.0;
-
             let top_pane_margin = if self.show_tab_bar && !self.config.tab_bar_at_bottom {
                 TOP_PANE_MARGIN_WITH_TAB_BAR
             } else {
@@ -426,16 +437,9 @@ impl crate::TermWindow {
             } else {
                 LOWER_PANE_MARGIN
             };
-            let dot_color = self.palette().cursor_bg.to_linear().mul_alpha(DOT_ALPHA);
 
-            static CIRCLE_POLY: &[Poly] = &[Poly {
-                path: &[PolyCommand::Circle {
-                    center: (BlockCoord::Frac(1, 2), BlockCoord::Frac(1, 2)),
-                    radius: BlockCoord::Frac(1, 2),
-                }],
-                intensity: BlockAlpha::Full,
-                style: PolyStyle::Fill,
-            }];
+            const DOT_ALPHA: f32 = 0.5;
+            let dot_color = self.palette().cursor_bg.to_linear().mul_alpha(DOT_ALPHA);
 
             self.poly_quad(
                 &mut layers,
@@ -457,8 +461,10 @@ impl crate::TermWindow {
             }
         }
 
+        // Draw visual notification dot on inactive tabs with unread bell
         if self.show_tab_bar {
             self.paint_tab_bar(&mut layers).context("paint_tab_bar")?;
+            self.paint_tab_bell_indicators(&mut layers)?;
         }
 
         self.paint_window_borders(&mut layers)
@@ -466,6 +472,98 @@ impl crate::TermWindow {
         drop(layers);
         self.paint_modal().context("paint_modal")?;
         self.paint_toast().context("paint_toast")?;
+
+        Ok(())
+    }
+
+    /// Draw a blinking dot on inactive tabs that have panes with unread bell events.
+    fn paint_tab_bell_indicators(
+        &mut self,
+        layers: &mut crate::quad::TripleLayerQuadAllocator,
+    ) -> anyhow::Result<()> {
+        use crate::tabbar::TabBarItem;
+
+        // Figure out which tab indices have unread bell panes
+        let mux = mux::Mux::get();
+        let mux_window = match mux.get_window(self.mux_window_id) {
+            Some(w) => w,
+            None => return Ok(()),
+        };
+        let active_tab_idx = mux_window.get_active_idx();
+
+        let mut tabs_with_bell: HashSet<usize> = HashSet::new();
+        for (idx, tab) in mux_window.iter().enumerate() {
+            if idx == active_tab_idx {
+                continue; // skip active tab
+            }
+            let panes = tab.iter_panes_ignoring_zoom();
+            for pos in &panes {
+                if self.pane_state(pos.pane.pane_id()).has_unread_bell {
+                    tabs_with_bell.insert(idx);
+                    break;
+                }
+            }
+        }
+
+        if tabs_with_bell.is_empty() {
+            return Ok(());
+        }
+
+        // Blink: 500ms on, 500ms off
+        let blink_phase = self.created.elapsed().as_millis() % 1000;
+        let is_visible = blink_phase >= 500;
+
+        if is_visible {
+            let notif_color = self.palette().cursor_bg.to_linear().mul_alpha(0.9);
+
+            static CIRCLE_POLY: &[Poly] = &[Poly {
+                path: &[PolyCommand::Circle {
+                    center: (BlockCoord::Frac(1, 2), BlockCoord::Frac(1, 2)),
+                    radius: BlockCoord::Frac(1, 2),
+                }],
+                intensity: BlockAlpha::Full,
+                style: PolyStyle::Fill,
+            }];
+
+            const DOT_SIZE: f32 = 10.0;
+            const DOT_RIGHT_MARGIN: f32 = 6.0;
+
+            for ui_item in &self.ui_items {
+                if let crate::termwindow::UIItemType::TabBar(TabBarItem::Tab {
+                    tab_idx,
+                    active: false,
+                }) = &ui_item.item_type
+                {
+                    if tabs_with_bell.contains(tab_idx) {
+                        // Draw dot at the right side of the tab, vertically centered
+                        let dot_x =
+                            (ui_item.x + ui_item.width) as f32 - DOT_SIZE - DOT_RIGHT_MARGIN;
+                        let dot_y = ui_item.y as f32 + (ui_item.height as f32 - DOT_SIZE) / 2.0;
+
+                        self.poly_quad(
+                            layers,
+                            2,
+                            euclid::point2(dot_x, dot_y),
+                            CIRCLE_POLY,
+                            1,
+                            euclid::size2(DOT_SIZE, DOT_SIZE),
+                            notif_color,
+                        )
+                        .context("tab bell indicator")?;
+                    }
+                }
+            }
+        }
+
+        // Schedule re-render at next blink toggle (500ms cadence)
+        let next = Instant::now() + Duration::from_millis(500);
+        let mut anim = self.has_animation.borrow_mut();
+        match *anim {
+            Some(existing) if existing <= next => {}
+            _ => {
+                *anim = Some(next);
+            }
+        }
 
         Ok(())
     }
