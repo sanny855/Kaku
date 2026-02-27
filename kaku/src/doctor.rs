@@ -3,7 +3,7 @@
 use clap::Parser;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{self, ErrorKind, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -21,21 +21,52 @@ impl DoctorCommand {
         print!("{}", render_text_report(&report));
 
         if self.fix {
-            println!("Auto-fix: running `kaku init --update-only`");
-            let init_cmd = crate::init::InitCommand { update_only: true };
-            match init_cmd.run() {
-                Ok(()) => println!("Auto-fix: completed"),
-                Err(err) => println!("Auto-fix: failed: {:#}", err),
-            }
+            run_auto_fix_and_rerun_report();
+            return Ok(());
+        }
 
-            let after = build_report();
-            println!();
-            println!("After Auto-fix");
-            print!("{}", render_text_report(&after));
+        if should_offer_auto_fix(&report) && io::stdin().is_terminal() && io::stdout().is_terminal()
+        {
+            match prompt_yes_no("Run safe auto-fix now with `kaku init --update-only`? [Y/n] ") {
+                Ok(true) => run_auto_fix_and_rerun_report(),
+                Ok(false) => {}
+                Err(err) => eprintln!("Auto-fix prompt skipped: {}", err),
+            }
         }
 
         Ok(())
     }
+}
+
+fn should_offer_auto_fix(report: &DoctorReport) -> bool {
+    report.overall_status.severity_rank() >= DoctorStatus::Warn.severity_rank()
+}
+
+fn prompt_yes_no(question: &str) -> anyhow::Result<bool> {
+    print!("{}", question);
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    let bytes = io::stdin().read_line(&mut input)?;
+    if bytes == 0 {
+        return Ok(false);
+    }
+    let answer = input.trim().to_ascii_lowercase();
+    Ok(answer.is_empty() || answer == "y" || answer == "yes")
+}
+
+fn run_auto_fix_and_rerun_report() {
+    println!("Auto-fix: running `kaku init --update-only`");
+    let init_cmd = crate::init::InitCommand { update_only: true };
+    match init_cmd.run() {
+        Ok(()) => println!("Auto-fix: completed"),
+        Err(err) => println!("Auto-fix: failed: {:#}", err),
+    }
+
+    let after = build_report();
+    println!();
+    println!("After Auto-fix");
+    print!("{}", render_text_report(&after));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

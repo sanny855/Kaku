@@ -8,7 +8,7 @@ use mux::termwiztermtab::TermWizTerminal;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::{mpsc, Mutex};
+use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 use termwiz::cell::{AttributeChange, CellAttributes, Intensity};
@@ -228,6 +228,10 @@ pub fn show_debug_overlay(
         doctor_snapshot.placeholder_text(),
     ))])?;
     doctor_snapshot.render_if_ready(&mut term)?;
+    // `read_line` blocks until an input event arrives. Give the background
+    // doctor snapshot a short window to render before entering the editor loop,
+    // so the panel does not appear to "require Enter" to show results.
+    doctor_snapshot.wait_for_initial_render(&mut term)?;
 
     loop {
         doctor_snapshot.render_if_ready(&mut term)?;
@@ -309,6 +313,22 @@ impl PendingDoctorSnapshot {
                 )])
             }
         }
+    }
+
+    fn wait_for_initial_render(&mut self, term: &mut TermWizTerminal) -> termwiz::Result<()> {
+        if self.rendered {
+            return Ok(());
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        while Instant::now() < deadline {
+            self.render_if_ready(term)?;
+            if self.rendered {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        Ok(())
     }
 }
 
