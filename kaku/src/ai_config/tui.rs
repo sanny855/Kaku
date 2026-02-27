@@ -2558,7 +2558,9 @@ fn run_loop(
                 app.status_msg = None;
                 if app.is_selecting() {
                     match key.code {
-                        KeyCode::Enter => app.confirm_select(),
+                        KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
+                            app.confirm_select()
+                        }
                         KeyCode::Esc => app.cancel_select(),
                         KeyCode::Up | KeyCode::Char('k') => app.move_select_up(),
                         KeyCode::Down | KeyCode::Char('j') => app.move_select_down(),
@@ -2569,7 +2571,9 @@ fn run_loop(
 
                 if app.is_editing() {
                     match key.code {
-                        KeyCode::Enter => app.confirm_edit(),
+                        KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
+                            app.confirm_edit()
+                        }
                         KeyCode::Esc => app.cancel_edit(),
                         KeyCode::Left => {
                             if let Some((edit_buf, edit_cursor)) = app.editing_mut() {
@@ -2649,7 +2653,7 @@ fn run_loop(
                     }
                     KeyCode::Up | KeyCode::Char('k') => app.move_up(),
                     KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-                    KeyCode::Enter => app.start_edit(),
+                    KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => app.start_edit(),
                     KeyCode::Char('o') => app.open_config(),
                     KeyCode::Char('r') => app.refresh_models(),
                     _ => {}
@@ -2665,16 +2669,22 @@ fn run_loop(
                     continue;
                 }
 
+                let ends_with_newline = text.ends_with('\n') || text.ends_with('\r');
+
                 // Clipboard paste may include a trailing newline from terminal copy.
-                // Strip line breaks so paste doesn't immediately trigger submit behavior.
+                // Strip line breaks so paste doesn't break single-line inputs.
                 let cleaned: String = text.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-                if cleaned.is_empty() {
-                    continue;
-                }
-                if let Some((edit_buf, edit_cursor)) = app.editing_mut() {
-                    for c in cleaned.chars() {
-                        edit_insert_char(edit_buf, edit_cursor, c);
+                if !cleaned.is_empty() {
+                    if let Some((edit_buf, edit_cursor)) = app.editing_mut() {
+                        for c in cleaned.chars() {
+                            edit_insert_char(edit_buf, edit_cursor, c);
+                        }
                     }
+                }
+
+                // If the pasted text (often from voice typing tools) ends with a newline, auto-submit
+                if ends_with_newline {
+                    app.confirm_edit();
                 }
             }
             _ => {}
