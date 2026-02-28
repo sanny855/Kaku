@@ -3807,6 +3807,8 @@ impl WindowView {
         );
 
         let special_shortcut = (chars == "." && modifiers == Modifiers::SUPER)
+            || (chars == "," && modifiers.contains(Modifiers::SUPER))
+            || (chars == "<" && modifiers.contains(Modifiers::SUPER))
             || (chars == "\u{1b}" && modifiers == Modifiers::CTRL)
             || (chars == "\t" && modifiers == Modifiers::CTRL)
             || (chars == "\x19"/* Shift-Tab: See issue #1902 */);
