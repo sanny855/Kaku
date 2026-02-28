@@ -71,7 +71,12 @@ define_class!(
 
             if let Some(url) = url {
                 if let Ok(url_str) = url.downcast::<NSString>() {
-                    wezterm_open_url::open_url(&url_str.to_string());
+                    let url_string = url_str.to_string();
+                    if url_string == "kaku://update" {
+                        spawn_kaku_update();
+                    } else {
+                        wezterm_open_url::open_url(&url_string);
+                    }
                 }
             }
 
@@ -200,4 +205,36 @@ pub fn show_notif(toast: ToastNotification) -> Result<(), Box<dyn std::error::Er
     }
 
     Ok(())
+}
+
+fn spawn_kaku_update() {
+    std::thread::spawn(|| {
+        // Find kaku-gui in the current app bundle or /Applications
+        let kaku_gui = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|p| p.join("kaku-gui")))
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from("/Applications/Kaku.app/Contents/MacOS/kaku-gui")
+            });
+
+        log::info!("spawn_kaku_update: launching {:?}", kaku_gui);
+
+        // Find kaku CLI in the same directory as kaku-gui
+        let kaku_cli = kaku_gui.parent()
+            .map(|p| p.join("kaku"))
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from("/Applications/Kaku.app/Contents/MacOS/kaku")
+            });
+
+        let result = std::process::Command::new(&kaku_gui)
+            .args(["start", "--", kaku_cli.to_str().unwrap_or("kaku"), "update"])
+            .spawn();
+
+        match result {
+            Ok(_) => log::info!("spawn_kaku_update: process spawned successfully"),
+            Err(e) => log::error!("spawn_kaku_update: failed to spawn: {}", e),
+        }
+    });
 }
