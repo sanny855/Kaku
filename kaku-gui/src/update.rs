@@ -61,9 +61,12 @@ fn get_latest_tag_via_redirect() -> anyhow::Result<Release> {
             "--location",
             "--silent",
             "--show-error",
-            "--connect-timeout", "10",
-            "--write-out", "%{url_effective}",
-            "--output", "/dev/null",
+            "--connect-timeout",
+            "10",
+            "--write-out",
+            "%{url_effective}",
+            "--output",
+            "/dev/null",
             "https://github.com/tw93/Kaku/releases/latest",
         ])
         .output()
@@ -164,7 +167,8 @@ fn update_checker() {
                     current
                 );
                 std::thread::sleep(initial_interval);
-                let my_sock = config::RUNTIME_DIR.join(format!("gui-sock-{}", unsafe { libc::getpid() }));
+                let my_sock =
+                    config::RUNTIME_DIR.join(format!("gui-sock-{}", unsafe { libc::getpid() }));
                 let socks = wezterm_client::discovery::discover_gui_socks();
                 if force_ui || socks.is_empty() || socks.first() == Some(&my_sock) {
                     persistent_toast_notification_with_click_to_open_url(
@@ -193,7 +197,10 @@ fn update_checker() {
         })
         .unwrap_or(initial_interval);
 
-    log::info!("update_checker: sleeping for {:?}", if force_ui { initial_interval } else { delay });
+    log::info!(
+        "update_checker: sleeping for {:?}",
+        if force_ui { initial_interval } else { delay }
+    );
     std::thread::sleep(if force_ui { initial_interval } else { delay });
     log::info!("update_checker: woke up, starting check loop");
 
@@ -208,7 +215,10 @@ fn update_checker() {
         // running, we don't spam the user with a lot of notifications.
         let socks = wezterm_client::discovery::discover_gui_socks();
 
-        log::info!("update_checker: check_for_updates={}", configuration().check_for_updates);
+        log::info!(
+            "update_checker: check_for_updates={}",
+            configuration().check_for_updates
+        );
         if configuration().check_for_updates {
             log::info!("update_checker: fetching release info...");
             match get_latest_release_info() {
@@ -222,11 +232,7 @@ fn update_checker() {
                             current
                         );
 
-                        log::info!(
-                            "update_checker: socks={:?}, my_sock={:?}",
-                            socks,
-                            my_sock
-                        );
+                        log::info!("update_checker: socks={:?}, my_sock={:?}", socks, my_sock);
                         if force_ui || socks.is_empty() || socks[0] == my_sock {
                             log::info!("update_checker: showing notification");
                             persistent_toast_notification_with_click_to_open_url(
