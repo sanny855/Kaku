@@ -3,6 +3,20 @@ use crate::utilsprites::RenderMetrics;
 use ::window::ULength;
 use config::{ConfigHandle, DimensionContext};
 
+const INTEGRATED_BUTTONS_TOP_INSET: usize = 16;
+
+pub(crate) fn integrated_buttons_top_inset(config: &ConfigHandle, is_fullscreen: bool) -> usize {
+    if !is_fullscreen
+        && config
+            .window_decorations
+            .contains(::window::WindowDecorations::INTEGRATED_BUTTONS)
+    {
+        INTEGRATED_BUTTONS_TOP_INSET
+    } else {
+        0
+    }
+}
+
 impl crate::TermWindow {
     pub fn paint_window_borders(
         &mut self,
@@ -216,12 +230,9 @@ impl crate::TermWindow {
         let is_fullscreen = self
             .window_state
             .contains(::window::WindowState::FULL_SCREEN);
-        let tab_bar_at_top = self.show_tab_bar && !self.config.tab_bar_at_bottom;
-
-        // Add extra top padding only when tab bar is at top in non-fullscreen mode.
-        // Tab bar at bottom relies solely on window_padding.top for spacing.
-        if tab_bar_at_top && !is_fullscreen {
-            border.top += ULength::new(6);
+        let extra_top = integrated_buttons_top_inset(&self.config, is_fullscreen);
+        if extra_top > 0 {
+            border.top += ULength::new(extra_top);
         }
 
         border
