@@ -108,6 +108,13 @@ fn decode_hex_event_payload(payload: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Check if a color is light based on luminance.
+/// Expects an SrgbaTuple (r, g, b, a) where r, g, b are in 0.0-1.0 range.
+pub fn is_light_color(color: &wezterm_term::color::SrgbaTuple) -> bool {
+    let luminance = 0.299 * color.0 + 0.587 * color.1 + 0.114 * color.2;
+    luminance > 0.5
+}
+
 fn ai_toast_lifetime_ms(message: &str) -> u64 {
     let lower = message.to_ascii_lowercase();
     if lower.contains("checking")

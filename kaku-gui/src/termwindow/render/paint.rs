@@ -600,12 +600,26 @@ impl crate::TermWindow {
             1.0
         };
 
-        // Use bright purple (ansi index 13) for toast background
+        // Use theme-appropriate toast colors:
+        // Light theme: yellow/gold background with dark text
+        // Dark theme: purple background with white text
         let palette = self.palette();
-        let bg_linear = palette.colors.0[13].to_linear();
-        let bg_color = LinearRgba(bg_linear.0, bg_linear.1, bg_linear.2, 0.9 * alpha);
-        // Always use white text for visibility
-        let text_color = LinearRgba(1.0, 1.0, 1.0, alpha);
+        let is_light = crate::termwindow::is_light_color(&palette.background);
+        let (bg_color, text_color) = if is_light {
+            // Light theme: use yellow/gold (ANSI 3) with dark text
+            let bg_linear = palette.colors.0[3].to_linear();
+            (
+                LinearRgba(bg_linear.0, bg_linear.1, bg_linear.2, 0.9 * alpha),
+                LinearRgba(0.1, 0.1, 0.1, alpha),
+            )
+        } else {
+            // Dark theme: use purple (ANSI 13) with white text
+            let bg_linear = palette.colors.0[13].to_linear();
+            (
+                LinearRgba(bg_linear.0, bg_linear.1, bg_linear.2, 0.9 * alpha),
+                LinearRgba(1.0, 1.0, 1.0, alpha),
+            )
+        };
         let toast_radius = Dimension::Pixels(8.0);
 
         let text = Element::new(&font, ElementContent::Text(message.clone()))

@@ -620,12 +620,58 @@ local function parse_ai_toml_custom_headers(raw_value)
     local headers = {}
     local content = trim_surrounding_whitespace(value:sub(2, -2))
     if content ~= "" then
-      for part in content:gmatch("[^,]+") do
+      local token = {}
+      local in_double = false
+      local in_single = false
+      local escaped = false
+
+      local function flush_token()
+        local part = trim_surrounding_whitespace(table.concat(token))
+        token = {}
+        if part == "" then
+          return
+        end
         local item = strip_wrapping_quotes(part)
         if item ~= "" then
           headers[#headers + 1] = item
         end
       end
+
+      local i = 1
+      while i <= #content do
+        local ch = content:sub(i, i)
+
+        if in_double then
+          token[#token + 1] = ch
+          if escaped then
+            escaped = false
+          elseif ch == "\\" then
+            escaped = true
+          elseif ch == '"' then
+            in_double = false
+          end
+        elseif in_single then
+          token[#token + 1] = ch
+          if ch == "'" then
+            in_single = false
+          end
+        else
+          if ch == "," then
+            flush_token()
+          else
+            token[#token + 1] = ch
+            if ch == '"' then
+              in_double = true
+            elseif ch == "'" then
+              in_single = true
+            end
+          end
+        end
+
+        i = i + 1
+      end
+
+      flush_token()
     end
     return headers
   end

@@ -1074,17 +1074,30 @@ fn signal_config_changed() {
 fn update_opencode_theme() {
     let opencode_dir = config::HOME_DIR.join(".config").join("opencode");
     let themes_dir = opencode_dir.join("themes");
-    let new_theme_file = themes_dir.join("kaku-match.json");
-    let legacy_theme_file = themes_dir.join("wezterm-match.json");
+    let theme_file = themes_dir.join("kaku-match.json");
+    let legacy_file = themes_dir.join("wezterm-match.json");
+    let tui_config = opencode_dir.join("tui.json");
 
-    // Prefer new name, fall back to legacy name for old users
-    let theme_file = if new_theme_file.exists() {
-        new_theme_file
-    } else if legacy_theme_file.exists() {
-        legacy_theme_file
-    } else {
+    // Migrate old users: remove legacy file and update tui.json
+    if legacy_file.exists() {
+        let _ = std::fs::remove_file(&legacy_file);
+        // Update tui.json to use new theme name
+        if tui_config.exists() {
+            if let Ok(content) = std::fs::read_to_string(&tui_config) {
+                let updated = content.replace("\"wezterm-match\"", "\"kaku-match\"");
+                let _ = std::fs::write(&tui_config, updated);
+            }
+        }
+    }
+
+    // Ensure themes directory exists
+    if let Err(e) = std::fs::create_dir_all(&themes_dir) {
+        eprintln!(
+            "\x1b[33mWarning: Failed to create OpenCode themes directory: {}\x1b[0m",
+            e
+        );
         return;
-    };
+    }
 
     let theme_content = crate::ai_config::opencode_theme_json();
     if let Err(e) = std::fs::write(&theme_file, theme_content) {
