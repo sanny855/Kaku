@@ -610,6 +610,33 @@ local function parse_ai_toml_setting_value(raw_value)
   return strip_wrapping_quotes(value)
 end
 
+local function parse_ai_toml_custom_headers(raw_value)
+  local value = trim_surrounding_whitespace(raw_value or "")
+  if value == "" then
+    return {}
+  end
+
+  if value:sub(1, 1) == "[" and value:sub(-1) == "]" then
+    local headers = {}
+    local content = trim_surrounding_whitespace(value:sub(2, -2))
+    if content ~= "" then
+      for part in content:gmatch("[^,]+") do
+        local item = strip_wrapping_quotes(part)
+        if item ~= "" then
+          headers[#headers + 1] = item
+        end
+      end
+    end
+    return headers
+  end
+
+  local single = strip_wrapping_quotes(value)
+  if single == "" then
+    return {}
+  end
+  return { single }
+end
+
 local function load_ai_fix_file_settings()
   local settings = {}
   if not ai_fix_toml_path or ai_fix_toml_path == "" then
@@ -627,7 +654,12 @@ local function load_ai_fix_file_settings()
       if not line:match("^%s*%[") then
         local key, raw_value = line:match("^%s*([%w_%-]+)%s*=%s*(.-)%s*$")
         if key and raw_value then
-          local parsed = parse_ai_toml_setting_value(raw_value)
+          local parsed = nil
+          if key == "custom_headers" then
+            parsed = parse_ai_toml_custom_headers(raw_value)
+          else
+            parsed = parse_ai_toml_setting_value(raw_value)
+          end
           if parsed ~= nil then
             settings[key] = parsed
           end
@@ -674,11 +706,59 @@ local function read_ai_setting(file_key, default_value)
   return value
 end
 
+local function parse_ai_custom_header_entry(raw_header)
+  if type(raw_header) ~= "string" then
+    return nil, nil
+  end
+
+  local trimmed = trim_surrounding_whitespace(raw_header)
+  if trimmed == "" then
+    return nil, nil
+  end
+
+  local colon_at = trimmed:find(":", 1, true)
+  if not colon_at or colon_at <= 1 then
+    return nil, nil
+  end
+
+  local name = trim_surrounding_whitespace(trimmed:sub(1, colon_at - 1))
+  local value = trim_surrounding_whitespace(trimmed:sub(colon_at + 1))
+  if name == "" or value == "" then
+    return nil, nil
+  end
+
+  return name .. ": " .. value, string.lower(name)
+end
+
+local function read_ai_custom_headers(file_key)
+  local raw_headers = ai_fix_file_settings[file_key]
+  if type(raw_headers) ~= "table" then
+    return {}
+  end
+
+  local headers = {}
+  local seen = {
+    ["authorization"] = true,
+    ["content-type"] = true,
+  }
+
+  for _, raw in ipairs(raw_headers) do
+    local parsed, name_key = parse_ai_custom_header_entry(raw)
+    if parsed and name_key and not seen[name_key] then
+      seen[name_key] = true
+      headers[#headers + 1] = parsed
+    end
+  end
+
+  return headers
+end
+
 -- Keep cold startup fast: parse assistant.toml lazily only when AI fix is needed.
 local ai_fix_enabled = true
 local ai_fix_api_base_url = "https://api.vivgrid.com/v1"
 local ai_fix_api_key = nil
 local ai_fix_model = "DeepSeek-V3.2"
+local ai_fix_custom_headers = {}
 local ai_fix_timeout_secs = 12
 local ai_fix_debug_enabled = false
 local ai_fix_state_by_pane = {}
@@ -706,6 +786,7 @@ local function refresh_ai_fix_settings()
   ai_fix_api_base_url = read_ai_setting("base_url", ai_fix_api_base_url)
   ai_fix_api_key = read_ai_setting("api_key", ai_fix_api_key)
   ai_fix_model = read_ai_setting("model", ai_fix_model)
+  ai_fix_custom_headers = read_ai_custom_headers("custom_headers")
 end
 
 local function detect_git_branch(path)
@@ -752,6 +833,22 @@ end
 
 local function ai_fix_endpoint()
   return trim_trailing_whitespace(ai_fix_api_base_url):gsub("/+$", "") .. "/chat/completions"
+end
+
+local function ai_fix_curl_header_args()
+  local args = {
+    "-H",
+    "Authorization: Bearer " .. ai_fix_api_key,
+    "-H",
+    "Content-Type: application/json",
+  }
+
+  for _, header in ipairs(ai_fix_custom_headers) do
+    args[#args + 1] = "-H"
+    args[#args + 1] = header
+  end
+
+  return args
 end
 
 local function encode_ai_fix_payload(model, messages)
@@ -831,19 +928,30 @@ local function start_ai_fix_background_job(payload)
     return nil, "failed to write request payload"
   end
 
+  local curl_header_args = ai_fix_curl_header_args()
+
   local script = [[
 status=0
-curl -sS --fail --connect-timeout "$1" --max-time "$2" "$3" \
-  -H "$4" \
-  -H "$5" \
-  --data-binary "@$6" \
-  -o "$7" \
-  --stderr "$8"
+connect_timeout="$1"
+max_time="$2"
+url="$3"
+request_path="$4"
+response_path="$5"
+stderr_path="$6"
+status_path="$7"
+shift 7
+
+set -- -sS --fail --connect-timeout "$connect_timeout" --max-time "$max_time" "$url" "$@" \
+  --data-binary "@$request_path" \
+  -o "$response_path" \
+  --stderr "$stderr_path"
+
+curl "$@"
 status=$?
-printf '%s' "$status" > "$9"
+printf '%s' "$status" > "$status_path"
 ]]
   local launched_ok, launch_err = pcall(function()
-    wezterm.background_child_process({
+    local launch_args = {
       "sh",
       "-c",
       script,
@@ -851,13 +959,15 @@ printf '%s' "$status" > "$9"
       "3",
       tostring(ai_fix_timeout_secs),
       ai_fix_endpoint(),
-      "Authorization: Bearer " .. ai_fix_api_key,
-      "Content-Type: application/json",
       job.paths.request_path,
       job.paths.response_path,
       job.paths.stderr_path,
       job.paths.status_path,
-    })
+    }
+    for _, arg in ipairs(curl_header_args) do
+      launch_args[#launch_args + 1] = arg
+    end
+    wezterm.background_child_process(launch_args)
   end)
 
   if not launched_ok then

@@ -8,6 +8,7 @@ use crossterm::event::{
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -358,6 +359,69 @@ fn mask_key(val: &str) -> String {
     format!("{}...{}", &val[..12], &val[val.len() - 4..])
 }
 
+fn normalize_custom_header(value: &str) -> Option<String> {
+    let raw = value.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let (name, header_value) = raw.split_once(':')?;
+    let name = name.trim();
+    let header_value = header_value.trim();
+    if name.is_empty() || header_value.is_empty() {
+        return None;
+    }
+    if name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("content-type") {
+        return None;
+    }
+    Some(format!("{name}: {header_value}"))
+}
+
+fn normalize_custom_headers(values: Vec<String>) -> Vec<String> {
+    let mut dedup = HashSet::new();
+    values
+        .into_iter()
+        .filter_map(|item| normalize_custom_header(&item))
+        .filter(|header| {
+            let key = header
+                .split_once(':')
+                .map(|(name, _)| name)
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            dedup.insert(key)
+        })
+        .collect()
+}
+
+fn parse_custom_headers_toml(value: Option<&toml::Value>) -> Vec<String> {
+    match value {
+        Some(toml::Value::Array(items)) => normalize_custom_headers(
+            items
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect(),
+        ),
+        Some(toml::Value::String(raw)) => normalize_custom_headers(
+            raw.split(',')
+                .map(|part| part.trim().to_string())
+                .filter(|part| !part.is_empty())
+                .collect(),
+        ),
+        _ => vec![],
+    }
+}
+
+fn parse_custom_headers_input(raw: &str) -> Vec<String> {
+    normalize_custom_headers(
+        raw.replace('\n', ",")
+            .split(',')
+            .map(|part| part.trim().to_string())
+            .filter(|part| !part.is_empty())
+            .collect(),
+    )
+}
+
 /// Configuration for the Kaku built-in AI assistant.
 ///
 /// This struct holds the configuration for Kaku's AI-powered command analysis
@@ -373,6 +437,8 @@ struct KakuAssistantConfig {
     model: String,
     /// Base URL for the API endpoint (never empty, falls back to default)
     base_url: String,
+    /// Optional extra request headers as `Name: Value`
+    custom_headers: Vec<String>,
 }
 
 impl KakuAssistantConfig {
@@ -404,7 +470,13 @@ impl KakuAssistantConfig {
             } else {
                 base_url
             },
+            custom_headers: vec![],
         }
+    }
+
+    fn with_custom_headers(mut self, custom_headers: Vec<String>) -> Self {
+        self.custom_headers = normalize_custom_headers(custom_headers);
+        self
     }
 
     /// Returns whether the assistant is enabled.
@@ -425,6 +497,10 @@ impl KakuAssistantConfig {
     /// Returns the base URL (never empty).
     fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    fn custom_headers(&self) -> &[String] {
+        &self.custom_headers
     }
 }
 
@@ -455,8 +531,9 @@ fn parse_kaku_assistant_config(raw: &str) -> KakuAssistantConfig {
         .get("base_url")
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    let custom_headers = parse_custom_headers_toml(parsed.get("custom_headers"));
 
-    KakuAssistantConfig::new(enabled, api_key, model, base_url)
+    KakuAssistantConfig::new(enabled, api_key, model, base_url).with_custom_headers(custom_headers)
 }
 
 fn get_kaku_assistant_api_key() -> Option<String> {
@@ -507,6 +584,16 @@ fn extract_kaku_assistant_fields(raw: &str) -> Vec<FieldEntry> {
             editable: true,
         },
         FieldEntry {
+            key: "Custom Headers".into(),
+            value: if cfg.custom_headers().is_empty() {
+                "—".into()
+            } else {
+                cfg.custom_headers().join(", ")
+            },
+            options: vec![],
+            editable: true,
+        },
+        FieldEntry {
             key: "API Key".into(),
             value: mask_key(cfg.api_key()),
             options: vec![],
@@ -527,7 +614,8 @@ fn write_kaku_assistant_config(path: &Path, cfg: &KakuAssistantConfig) -> anyhow
     );
     out.push_str("# api_key: provider API key, example: \"sk-xxxx\".\n");
     out.push_str("# model: model id, example: \"DeepSeek-V3.2\" or \"gpt-5-mini\".\n");
-    out.push_str("# base_url: chat-completions API root URL.\n\n");
+    out.push_str("# base_url: chat-completions API root URL.\n");
+    out.push_str("# custom_headers: optional extra HTTP headers as \"Name: Value\" strings.\n\n");
     out.push_str(if cfg.is_enabled() {
         "enabled = true\n"
     } else {
@@ -549,6 +637,17 @@ fn write_kaku_assistant_config(path: &Path, cfg: &KakuAssistantConfig) -> anyhow
         "base_url = {}\n",
         render_toml_string(cfg.base_url().trim())
     ));
+    if cfg.custom_headers().is_empty() {
+        out.push_str("# custom_headers = [\"X-Customer-ID: your-customer-id\"]\n");
+    } else {
+        let arr = toml::Value::Array(
+            cfg.custom_headers()
+                .iter()
+                .map(|item| toml::Value::String(item.clone()))
+                .collect(),
+        );
+        out.push_str(&format!("custom_headers = {}\n", arr));
+    }
     write_atomic(path, out.as_bytes()).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
@@ -589,6 +688,7 @@ fn save_kaku_assistant_field(field_key: &str, new_val: &str) -> anyhow::Result<(
         "Enabled" => {
             let enabled = matches!(new_val.trim(), "On" | "on" | "true" | "1");
             KakuAssistantConfig::new(enabled, cfg.api_key(), cfg.model(), cfg.base_url())
+                .with_custom_headers(cfg.custom_headers().to_vec())
         }
         "Model" => {
             let model = if new_val.trim().is_empty() || new_val == "—" {
@@ -597,6 +697,7 @@ fn save_kaku_assistant_field(field_key: &str, new_val: &str) -> anyhow::Result<(
                 new_val.trim()
             };
             KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), model, cfg.base_url())
+                .with_custom_headers(cfg.custom_headers().to_vec())
         }
         "Base URL" => {
             let base_url = if new_val.trim().is_empty() || new_val == "—" {
@@ -605,13 +706,24 @@ fn save_kaku_assistant_field(field_key: &str, new_val: &str) -> anyhow::Result<(
                 new_val.trim()
             };
             KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), cfg.model(), base_url)
+                .with_custom_headers(cfg.custom_headers().to_vec())
+        }
+        "Custom Headers" => {
+            let custom_headers = if new_val.trim().is_empty() || new_val == "—" {
+                vec![]
+            } else {
+                parse_custom_headers_input(new_val)
+            };
+            KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), cfg.model(), cfg.base_url())
+                .with_custom_headers(custom_headers)
         }
         "API Key" => KakuAssistantConfig::new(
             cfg.is_enabled(),
             new_val.trim(),
             cfg.model(),
             cfg.base_url(),
-        ),
+        )
+        .with_custom_headers(cfg.custom_headers().to_vec()),
         _ => return Ok(()),
     };
 
@@ -2933,5 +3045,17 @@ mod tests {
             .find(|f| f.key == "Enabled")
             .expect("enabled field");
         assert_eq!(enabled.value, "Off");
+    }
+
+    #[test]
+    fn kaku_assistant_custom_headers_are_visible_in_fields() {
+        let fields = extract_kaku_assistant_fields(
+            "custom_headers = [\"X-Customer-ID: demo\", \"X-Trace-ID: abc123\"]\n",
+        );
+        let headers = fields
+            .iter()
+            .find(|f| f.key == "Custom Headers")
+            .expect("custom headers field");
+        assert_eq!(headers.value, "X-Customer-ID: demo, X-Trace-ID: abc123");
     }
 }
