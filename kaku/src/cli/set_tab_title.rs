@@ -49,12 +49,10 @@ impl SetTabTitle {
             match pane_id_to_tab_id.get(&pane_id).copied() {
                 Some(id) => id,
                 None => {
-                    // WEZTERM_PANE env var may be stale; fallback to focused pane
-                    let focused_pane_id = Self::get_focused_pane_id(&client).await?;
-                    pane_id_to_tab_id
-                        .get(&focused_pane_id)
-                        .copied()
-                        .ok_or_else(|| anyhow::anyhow!("unable to resolve current tab"))?
+                    anyhow::bail!(
+                        "pane {} not found; use --tab-id to specify the target tab explicitly",
+                        pane_id
+                    );
                 }
             }
         };
@@ -66,15 +64,5 @@ impl SetTabTitle {
             })
             .await?;
         Ok(())
-    }
-
-    async fn get_focused_pane_id(client: &Client) -> anyhow::Result<PaneId> {
-        let mut clients = client.list_clients().await?.clients;
-        clients.retain(|c| c.focused_pane_id.is_some());
-        clients.sort_by(|a, b| b.last_input.cmp(&a.last_input));
-        clients
-            .first()
-            .and_then(|c| c.focused_pane_id)
-            .ok_or_else(|| anyhow::anyhow!("no focused pane found"))
     }
 }
