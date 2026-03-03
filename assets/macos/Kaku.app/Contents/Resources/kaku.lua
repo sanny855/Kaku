@@ -2421,6 +2421,12 @@ local kaku_theme = {
       fg_color = KAKU_WHITE,
     },
   },
+
+  -- Override Claude Code quote background for better contrast
+  color_overrides = {
+    ['#6d6d6d'] = '#3A3942',  -- ANSI 8 (bright black)
+    ['#6E6E6E'] = '#3A3942',  -- Claude Code true color
+  },
 }
 
 -- ===== Kaku Light Theme =====
@@ -2493,6 +2499,12 @@ local kaku_light = {
       bg_color = '#E8E6DB',
       fg_color = '#100F0F',
     },
+  },
+
+  -- Override Claude Code quote background for better contrast
+  color_overrides = {
+    ['#575653'] = '#E0DED8',  -- ANSI 7 (white)
+    ['#585754'] = '#E0DED8',  -- Claude Code true color
   },
 }
 
