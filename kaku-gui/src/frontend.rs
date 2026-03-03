@@ -27,6 +27,8 @@ pub struct GuiFrontEnd {
     known_windows: RefCell<BTreeMap<Window, MuxWindowId>>,
     client_id: Arc<ClientId>,
     config_subscription: RefCell<Option<ConfigSubscription>>,
+    /// Global count of unread bell events across all windows
+    unread_bell_count: RefCell<usize>,
 }
 
 impl Drop for GuiFrontEnd {
@@ -257,6 +259,7 @@ impl GuiFrontEnd {
             known_windows: RefCell::new(BTreeMap::new()),
             client_id: client_id.clone(),
             config_subscription: RefCell::new(None),
+            unread_bell_count: RefCell::new(0),
         });
 
         mux.subscribe(move |n| {
@@ -810,6 +813,26 @@ impl GuiFrontEnd {
         self.known_windows.borrow_mut().remove(window);
         if !self.is_switching_workspace() {
             self.reconcile_workspace();
+        }
+    }
+
+    /// Adjust the global unread bell count and update Dock badge.
+    /// Pass positive value to increment, negative to decrement.
+    pub fn adjust_unread_bell_count(&self, delta: isize) {
+        let mut count = self.unread_bell_count.borrow_mut();
+        if delta > 0 {
+            *count = count.saturating_add(delta as usize);
+        } else {
+            *count = count.saturating_sub((-delta) as usize);
+        }
+        let current = *count;
+        drop(count);
+
+        // Always update badge: show count if enabled, clear otherwise
+        if config::configuration().bell_dock_badge && current > 0 {
+            self.connection.set_dock_badge(Some(&current.to_string()));
+        } else {
+            self.connection.set_dock_badge(None);
         }
     }
 

@@ -874,6 +874,14 @@ pub struct Config {
     #[dynamic(default)]
     pub audible_bell: AudibleBell,
 
+    /// Show a dot indicator on inactive tabs with unread bell events
+    #[dynamic(default = "default_true")]
+    pub bell_tab_indicator: bool,
+
+    /// Show a badge on the Dock icon when bell fires in unfocused window
+    #[dynamic(default = "default_true")]
+    pub bell_dock_badge: bool,
+
     #[dynamic(default)]
     pub canonicalize_pasted_newlines: Option<NewlineCanon>,
 

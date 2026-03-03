@@ -424,8 +424,7 @@ impl crate::TermWindow {
                     pos.pane.advise_focus();
                     mux::Mux::get().record_focus_for_current_identity(pos.pane.pane_id());
                 }
-                // Clear unread bell when pane becomes active (covers mouse click, tab switch, etc.)
-                self.pane_state(pos.pane.pane_id()).has_unread_bell = false;
+                // Bell state cleared in clear_active_tab_bell_state() to ensure badge sync
             }
             self.paint_pane(&pos, &mut layers).context("paint_pane")?;
         }
@@ -480,6 +479,9 @@ impl crate::TermWindow {
             }
         }
 
+        // Clear bell state for active tab and update Dock badge (always, regardless of tab bar visibility)
+        self.clear_active_tab_bell_state();
+
         // Draw visual notification dot on inactive tabs with unread bell
         if self.show_tab_bar {
             self.paint_tab_bar(&mut layers).context("paint_tab_bar")?;
@@ -493,6 +495,36 @@ impl crate::TermWindow {
         self.paint_toast().context("paint_toast")?;
 
         Ok(())
+    }
+
+    /// Clear bell state for all panes in the active tab and update global Dock badge.
+    /// Called every paint cycle to ensure badge stays in sync regardless of tab bar visibility.
+    /// Only clears when window has focus, so Dock badge persists while window is unfocused.
+    fn clear_active_tab_bell_state(&mut self) {
+        if self.focused.is_none() {
+            return;
+        }
+        let mux = mux::Mux::get();
+        let mux_window = match mux.get_window(self.mux_window_id) {
+            Some(w) => w,
+            None => return,
+        };
+        let active_tab_idx = mux_window.get_active_idx();
+
+        if let Some(active_tab) = mux_window.get_by_idx(active_tab_idx) {
+            let active_tab_panes = active_tab.iter_panes_ignoring_zoom();
+            let mut cleared_count: isize = 0;
+            for pos in &active_tab_panes {
+                let mut state = self.pane_state(pos.pane.pane_id());
+                if state.has_unread_bell {
+                    state.has_unread_bell = false;
+                    cleared_count += 1;
+                }
+            }
+            if cleared_count > 0 {
+                crate::frontend::front_end().adjust_unread_bell_count(-cleared_count);
+            }
+        }
     }
 
     /// Draw a dot on inactive tabs that have panes with unread bell events.
@@ -510,16 +542,6 @@ impl crate::TermWindow {
         };
         let active_tab_idx = mux_window.get_active_idx();
 
-        // Entering a tab is considered reading its notifications.
-        // Clear unread bell flags for all panes in the active tab so that
-        // switching to that tab stops future notification dots immediately.
-        if let Some(active_tab) = mux_window.get_by_idx(active_tab_idx) {
-            let active_tab_panes = active_tab.iter_panes_ignoring_zoom();
-            for pos in &active_tab_panes {
-                self.pane_state(pos.pane.pane_id()).has_unread_bell = false;
-            }
-        }
-
         let mut tabs_with_bell: HashSet<usize> = HashSet::new();
         for (idx, tab) in mux_window.iter().enumerate() {
             if idx == active_tab_idx {
@@ -534,7 +556,8 @@ impl crate::TermWindow {
             }
         }
 
-        if tabs_with_bell.is_empty() {
+        // Skip drawing if no bells or indicator is disabled
+        if tabs_with_bell.is_empty() || !self.config.bell_tab_indicator {
             return Ok(());
         }
 
@@ -549,7 +572,7 @@ impl crate::TermWindow {
             style: PolyStyle::Fill,
         }];
 
-        const DOT_RIGHT_MARGIN: f32 = 6.0;
+        const DOT_RIGHT_MARGIN: f32 = 3.0;
 
         for ui_item in &self.ui_items {
             if let crate::termwindow::UIItemType::TabBar(TabBarItem::Tab {
@@ -561,7 +584,8 @@ impl crate::TermWindow {
                     // Draw dot at the right side of the tab, vertically centered
                     let dot_x =
                         (ui_item.x + ui_item.width) as f32 - STATUS_DOT_SIZE - DOT_RIGHT_MARGIN;
-                    let dot_y = ui_item.y as f32 + (ui_item.height as f32 - STATUS_DOT_SIZE) / 2.0;
+                    let dot_y = ui_item.y as f32
+                        + ((ui_item.height as f32 - STATUS_DOT_SIZE) / 2.0).round();
 
                     self.poly_quad(
                         layers,

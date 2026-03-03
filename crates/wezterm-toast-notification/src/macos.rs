@@ -125,7 +125,9 @@ pub fn initialize() {
         };
 
         center.requestAuthorizationWithOptions_completionHandler(
-            UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,
+            UNAuthorizationOptions::Alert
+                | UNAuthorizationOptions::Sound
+                | UNAuthorizationOptions::Badge,
             &RcBlock::new(|ok: Bool, err| {
                 if ok.is_false() {
                     log::error!(
@@ -217,7 +219,9 @@ pub fn show_notif(toast: ToastNotification) -> Result<(), Box<dyn std::error::Er
                             // Remove this notification
                             if let Some(center) = get_notification_center() {
                                 let ident_array =
-                                    NSArray::from_retained_slice(&[NSString::from_str(&identifier)]);
+                                    NSArray::from_retained_slice(&[NSString::from_str(
+                                        &identifier,
+                                    )]);
                                 center.removeDeliveredNotificationsWithIdentifiers(&ident_array);
                             }
                         });

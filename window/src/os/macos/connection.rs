@@ -213,6 +213,19 @@ impl ConnectionOps for Connection {
         }
     }
 
+    fn set_dock_badge(&self, label: Option<&str>) {
+        unsafe {
+            let app = NSApp();
+            let dock_tile: id = msg_send![app, dockTile];
+            // Keep StrongPtr alive during the msg_send call
+            let ns_label_ptr = label.map(super::nsstring);
+            let ns_label: id = ns_label_ptr.as_ref().map_or(nil, |p| **p);
+            let () = msg_send![dock_tile, setBadgeLabel: ns_label];
+            // Force refresh the dock tile display
+            let () = msg_send![dock_tile, display];
+        }
+    }
+
     fn alert(&self, title: &str, message: &str) {
         unsafe {
             let alert: id = msg_send![class!(NSAlert), alloc];

@@ -282,6 +282,22 @@ impl App {
                 options: vec!["On", "Off"],
                 skip_write: false,
             },
+            ConfigField {
+                key: "Bell Tab Indicator",
+                lua_key: "bell_tab_indicator",
+                value: String::new(),
+                default: "On".into(),
+                options: vec!["On", "Off"],
+                skip_write: false,
+            },
+            ConfigField {
+                key: "Bell Dock Badge",
+                lua_key: "bell_dock_badge",
+                value: String::new(),
+                default: "On".into(),
+                options: vec!["On", "Off"],
+                skip_write: false,
+            },
         ];
 
         Self {
@@ -522,7 +538,7 @@ impl App {
     /// format; the caller should set skip_write=true to protect the original line.
     fn normalize_value(lua_key: &str, raw: &str) -> Option<String> {
         match lua_key {
-            "copy_on_select" => Some(if raw == "true" {
+            "copy_on_select" | "bell_tab_indicator" | "bell_dock_badge" => Some(if raw == "true" {
                 "On".into()
             } else {
                 "Off".into()
@@ -922,7 +938,7 @@ impl App {
             "font_size" | "line_height" | "window_background_opacity" | "split_pane_gap" => {
                 field.value.clone()
             }
-            "copy_on_select" => {
+            "copy_on_select" | "bell_tab_indicator" | "bell_dock_badge" => {
                 if field.value == "On" {
                     "true".into()
                 } else {

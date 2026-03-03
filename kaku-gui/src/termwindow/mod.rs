@@ -866,7 +866,12 @@ impl TermWindow {
         if let Some(pane) = self.get_active_pane_or_overlay() {
             pane.focus_changed(focused);
             if focused {
-                self.pane_state(pane.pane_id()).has_unread_bell = false;
+                let mut state = self.pane_state(pane.pane_id());
+                if state.has_unread_bell {
+                    state.has_unread_bell = false;
+                    drop(state);
+                    front_end().adjust_unread_bell_count(-1);
+                }
             }
         }
 
@@ -1628,12 +1633,22 @@ impl TermWindow {
                         .get_active_pane_or_overlay()
                         .map_or(true, |p| p.pane_id() != pane_id);
 
+                    let window_has_focus = self.focused.is_some();
                     let mut per_pane = self.pane_state(pane_id);
                     per_pane.bell_start.replace(Instant::now());
-                    if is_inactive {
+                    // Mark as unread if pane is inactive, OR if window has no focus
+                    // (so Dock badge works even for active pane bells)
+                    let should_mark_unread =
+                        (is_inactive || !window_has_focus) && !per_pane.has_unread_bell;
+                    if should_mark_unread {
                         per_pane.has_unread_bell = true;
                     }
                     drop(per_pane);
+
+                    // Update global Dock badge count
+                    if should_mark_unread {
+                        front_end().adjust_unread_bell_count(1);
+                    }
 
                     window.invalidate();
                 }
@@ -1699,9 +1714,16 @@ impl TermWindow {
                 MuxNotification::TabTitleChanged { .. } => {
                     self.update_title_post_status();
                 }
+                MuxNotification::PaneRemoved(pane_id) => {
+                    // Clean up pane state and adjust global bell count if needed
+                    if let Some(state) = self.pane_state.borrow_mut().remove(&pane_id) {
+                        if state.has_unread_bell {
+                            front_end().adjust_unread_bell_count(-1);
+                        }
+                    }
+                }
                 MuxNotification::PaneAdded(_)
                 | MuxNotification::WorkspaceRenamed { .. }
-                | MuxNotification::PaneRemoved(_)
                 | MuxNotification::WindowWorkspaceChanged(_)
                 | MuxNotification::ActiveWorkspaceChanged(_)
                 | MuxNotification::Empty
@@ -1778,6 +1800,17 @@ impl TermWindow {
 
         for tab_id in tab_overlays_to_cancel {
             self.cancel_overlay_for_tab(tab_id, None);
+        }
+
+        // Adjust global bell count before clearing pane state
+        let unread_count = self
+            .pane_state
+            .borrow()
+            .values()
+            .filter(|s| s.has_unread_bell)
+            .count() as isize;
+        if unread_count > 0 {
+            front_end().adjust_unread_bell_count(-unread_count);
         }
 
         self.pane_state.borrow_mut().clear();
@@ -2259,6 +2292,10 @@ impl TermWindow {
 
         self.invalidate_modal();
         self.emit_window_event("window-config-reloaded", None);
+
+        // Sync Dock badge in case bell_dock_badge was toggled.
+        // Passing 0 re-evaluates badge state without changing the count.
+        front_end().adjust_unread_bell_count(0);
     }
 
     fn invalidate_modal(&mut self) {

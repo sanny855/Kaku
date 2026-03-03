@@ -107,6 +107,10 @@ pub trait ConnectionOps {
     /// Perform the system beep/notification sound
     fn beep(&self) {}
 
+    /// Set the Dock badge label (macOS only).
+    /// Pass None to clear the badge.
+    fn set_dock_badge(&self, _label: Option<&str>) {}
+
     /// Returns information about the screens
     fn screens(&self) -> anyhow::Result<Screens> {
         anyhow::bail!("Unable to query screen information");

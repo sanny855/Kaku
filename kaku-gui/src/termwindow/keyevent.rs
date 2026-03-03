@@ -1008,7 +1008,12 @@ impl super::TermWindow {
         };
 
         if window_key.key_is_down {
-            self.pane_state(pane.pane_id()).has_unread_bell = false;
+            let mut state = self.pane_state(pane.pane_id());
+            if state.has_unread_bell {
+                state.has_unread_bell = false;
+                drop(state);
+                crate::frontend::front_end().adjust_unread_bell_count(-1);
+            }
         }
 
         // The leader key is a kind of modal modifier key.
