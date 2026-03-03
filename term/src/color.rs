@@ -2,6 +2,7 @@
 
 #[cfg(feature = "use_serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::HashMap;
 use std::fmt;
 use std::result::Result;
 pub use wezterm_cell::color::{AnsiColor, ColorAttribute, RgbColor, SrgbaTuple};
@@ -56,6 +57,9 @@ pub struct ColorPalette {
     pub selection_bg: SrgbaTuple,
     pub scrollbar_thumb: SrgbaTuple,
     pub split: SrgbaTuple,
+    /// Map true colors to replacement colors
+    #[cfg_attr(feature = "use_serde", serde(default))]
+    pub color_overrides: HashMap<SrgbaTuple, SrgbaTuple>,
 }
 
 impl fmt::Debug for Palette256 {
@@ -69,12 +73,18 @@ impl fmt::Debug for Palette256 {
 }
 
 impl ColorPalette {
+    fn apply_override(&self, color: SrgbaTuple) -> SrgbaTuple {
+        self.color_overrides.get(&color).copied().unwrap_or(color)
+    }
+
     pub fn resolve_fg(&self, color: ColorAttribute) -> SrgbaTuple {
         match color {
             ColorAttribute::Default => self.foreground,
             ColorAttribute::PaletteIndex(idx) => self.colors.0[idx as usize],
             ColorAttribute::TrueColorWithPaletteFallback(color, _)
-            | ColorAttribute::TrueColorWithDefaultFallback(color) => color.into(),
+            | ColorAttribute::TrueColorWithDefaultFallback(color) => {
+                self.apply_override(color.into())
+            }
         }
     }
     pub fn resolve_bg(&self, color: ColorAttribute) -> SrgbaTuple {
@@ -82,7 +92,9 @@ impl ColorPalette {
             ColorAttribute::Default => self.background,
             ColorAttribute::PaletteIndex(idx) => self.colors.0[idx as usize],
             ColorAttribute::TrueColorWithPaletteFallback(color, _)
-            | ColorAttribute::TrueColorWithDefaultFallback(color) => color.into(),
+            | ColorAttribute::TrueColorWithDefaultFallback(color) => {
+                self.apply_override(color.into())
+            }
         }
     }
 }
@@ -189,6 +201,7 @@ impl ColorPalette {
             selection_bg,
             scrollbar_thumb,
             split,
+            color_overrides: HashMap::new(),
         }
     }
 }

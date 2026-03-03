@@ -119,7 +119,7 @@ ensure_rust_targets "${BUILD_TARGETS[@]}"
 
 for target in "${BUILD_TARGETS[@]}"; do
 	echo "Building target: $target"
-	cargo build ${CARGO_PROFILE_ARGS[@]+"${CARGO_PROFILE_ARGS[@]}"} --target "$target" --target-dir "$TARGET_DIR" -p kaku-gui -p kaku
+	CARGO_TERM_PROGRESS_WHEN=auto cargo build ${CARGO_PROFILE_ARGS[@]+"${CARGO_PROFILE_ARGS[@]}"} --target "$target" --target-dir "$TARGET_DIR" -p kaku-gui -p kaku
 done
 
 if [[ "$BUILD_ARCH" == "universal" ]]; then

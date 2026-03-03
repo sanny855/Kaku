@@ -75,6 +75,12 @@ impl From<RgbaColor> for String {
     }
 }
 
+impl std::fmt::Display for RgbaColor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.color.to_string())
+    }
+}
+
 impl From<RgbaColor> for SrgbaTuple {
     fn from(val: RgbaColor) -> Self {
         val.color
@@ -176,6 +182,12 @@ pub struct Palette {
 
     pub launcher_label_fg: Option<ColorSpec>,
     pub launcher_label_bg: Option<ColorSpec>,
+
+    /// Map true colors to replacement colors.
+    /// This is useful for overriding colors that applications output via
+    /// 24-bit true color escape sequences.
+    #[dynamic(default)]
+    pub color_overrides: HashMap<RgbaColor, RgbaColor>,
 }
 impl_lua_conversion_dynamic!(Palette);
 
@@ -229,6 +241,13 @@ impl Palette {
             input_selector_label_bg: overlay!(input_selector_label_bg),
             launcher_label_fg: overlay!(launcher_label_fg),
             launcher_label_bg: overlay!(launcher_label_bg),
+            color_overrides: {
+                let mut map = self.color_overrides.clone();
+                for (k, v) in &other.color_overrides {
+                    map.insert(*k, *v);
+                }
+                map
+            },
         }
     }
 }
@@ -265,6 +284,10 @@ impl From<ColorPalette> for Palette {
 
         for (idx, col) in cp.colors.0.iter().enumerate().skip(16) {
             p.indexed.insert(idx as u8, (*col).into());
+        }
+
+        for (&from, &to) in &cp.color_overrides {
+            p.color_overrides.insert(from.into(), to.into());
         }
 
         p
@@ -311,6 +334,9 @@ impl From<Palette> for ColorPalette {
                 continue;
             }
             p.colors.0[idx as usize] = col.into();
+        }
+        for (&from, &to) in &cfg.color_overrides {
+            p.color_overrides.insert(from.into(), to.into());
         }
         p
     }
