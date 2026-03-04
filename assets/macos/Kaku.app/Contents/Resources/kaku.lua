@@ -301,12 +301,16 @@ local function update_window_config(window, is_full_screen, pane)
 
   -- Check if each setting needs update (skip if user has custom config).
   local padding_needs_update = false
-  if not user_has_custom_padding then
+  if user_has_custom_padding then
+    padding_needs_update = overrides.window_padding ~= nil
+  else
     padding_needs_update = not padding_matches(overrides.window_padding, expected_padding)
   end
 
   local tab_bar_needs_update = false
-  if not user_has_custom_hide_tab_bar then
+  if user_has_custom_hide_tab_bar then
+    tab_bar_needs_update = overrides.hide_tab_bar_if_only_one_tab ~= nil
+  else
     if pane_is_yazi_active and is_full_screen then
       tab_bar_needs_update = overrides.hide_tab_bar_if_only_one_tab ~= false
     elseif pane_is_yazi_active then
@@ -319,7 +323,9 @@ local function update_window_config(window, is_full_screen, pane)
   end
 
   local alignment_needs_update = false
-  if not user_has_custom_content_alignment then
+  if user_has_custom_content_alignment then
+    alignment_needs_update = overrides.window_content_alignment ~= nil
+  else
     if pane_is_yazi_active and is_full_screen then
       local align = overrides.window_content_alignment
       local align_is_center = type(align) == 'table'
@@ -360,11 +366,15 @@ local function update_window_config(window, is_full_screen, pane)
   end
 
   -- Apply settings only if user hasn't customized them.
-  if not user_has_custom_padding then
+  if user_has_custom_padding then
+    overrides.window_padding = nil
+  else
     overrides.window_padding = expected_padding
   end
 
-  if not user_has_custom_hide_tab_bar then
+  if user_has_custom_hide_tab_bar then
+    overrides.hide_tab_bar_if_only_one_tab = nil
+  else
     if pane_is_yazi_active and is_full_screen then
       overrides.hide_tab_bar_if_only_one_tab = false
     elseif pane_is_yazi_active then
@@ -376,7 +386,9 @@ local function update_window_config(window, is_full_screen, pane)
     end
   end
 
-  if not user_has_custom_content_alignment then
+  if user_has_custom_content_alignment then
+    overrides.window_content_alignment = nil
+  else
     if pane_is_yazi_active and is_full_screen then
       overrides.window_content_alignment = { horizontal = 'Left', vertical = 'Center' }
     elseif pane_is_yazi_active then
@@ -2323,16 +2335,17 @@ wezterm.on('window-config-reloaded', function(window, pane)
   local scheme = overrides.color_scheme or config.color_scheme or 'Kaku Dark'
   local is_light = scheme == 'Kaku Light'
 
-  -- Skip if font theme hasn't changed
-  if window_font_theme[window] == is_light then
-    return
-  end
-  window_font_theme[window] = is_light
+  if window_font_theme[window] ~= is_light then
+    window_font_theme[window] = is_light
 
-  local font, font_rules = build_font_config(is_light)
-  overrides.font = font
-  overrides.font_rules = font_rules
-  window:set_config_overrides(overrides)
+    local font, font_rules = build_font_config(is_light)
+    overrides.font = font
+    overrides.font_rules = font_rules
+    window:set_config_overrides(overrides)
+  end
+
+  local dims = window:get_dimensions()
+  update_window_config(window, dims.is_full_screen, pane)
 end)
 
 config.bold_brightens_ansi_colors = false
