@@ -823,7 +823,10 @@ impl Tab {
 
     /// Swap the active pane with the specified pane_index
     pub fn swap_active_with_index(&self, pane_index: usize, keep_focus: bool) -> Option<()> {
-        let focused_pane_id = self.inner.lock().swap_active_with_index(pane_index, keep_focus);
+        let focused_pane_id = self
+            .inner
+            .lock()
+            .swap_active_with_index(pane_index, keep_focus);
         Self::notify_focused_pane(focused_pane_id);
         None
     }
