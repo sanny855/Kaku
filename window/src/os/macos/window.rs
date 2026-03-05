@@ -2673,6 +2673,29 @@ fn should_intercept_special_shortcut(chars: &str, modifiers: Modifiers, virtual_
         || (chars == "\x19"/* Shift-Tab: See issue #1902 */)
 }
 
+fn should_intercept_perform_key_equivalent(
+    chars: &str,
+    modifiers: Modifiers,
+    virtual_key: u16,
+) -> bool {
+    // Route these combinations through key_common so command shortcuts remain
+    // stable even when NSMenu keyEquivalent matching is unreliable under IME.
+    let special_shortcut = should_intercept_special_shortcut(chars, modifiers, virtual_key);
+    let command_alnum_shortcut = is_command_alnum_shortcut(modifiers, virtual_key);
+    let command_non_menu_key =
+        modifiers.contains(Modifiers::SUPER) && is_non_menu_virtual_key(virtual_key);
+
+    special_shortcut || command_non_menu_key || command_alnum_shortcut
+}
+
+fn should_clear_modifiers_for_empty_unmod(
+    unmod: &str,
+    modifiers: Modifiers,
+    virtual_key: u16,
+) -> bool {
+    unmod.is_empty() && !is_command_alnum_shortcut(modifiers, virtual_key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2806,6 +2829,64 @@ mod tests {
         assert!(!is_command_alnum_shortcut(
             Modifiers::SUPER,
             kVK_ANSI_Grave,
+        ));
+    }
+
+    #[test]
+    fn perform_key_equivalent_intercept_matrix_for_cmd_alnum() {
+        // Core Cmd+alnum combinations should be intercepted.
+        assert!(should_intercept_perform_key_equivalent(
+            "w",
+            Modifiers::SUPER,
+            kVK_ANSI_W,
+        ));
+        assert!(should_intercept_perform_key_equivalent(
+            "D",
+            Modifiers::SUPER | Modifiers::SHIFT,
+            kVK_ANSI_D,
+        ));
+        assert!(should_intercept_perform_key_equivalent(
+            "1",
+            Modifiers::SUPER,
+            kVK_ANSI_1,
+        ));
+
+        // Cmd with extra modifiers (Alt/Ctrl) should not be treated as Cmd+alnum.
+        assert!(!should_intercept_perform_key_equivalent(
+            "w",
+            Modifiers::SUPER | Modifiers::ALT | Modifiers::LEFT_ALT,
+            kVK_ANSI_W,
+        ));
+        assert!(!should_intercept_perform_key_equivalent(
+            "w",
+            Modifiers::SUPER | Modifiers::CTRL,
+            kVK_ANSI_W,
+        ));
+
+        // Preserve macOS window cycling on Cmd+`.
+        assert!(!should_intercept_perform_key_equivalent(
+            "`",
+            Modifiers::SUPER,
+            kVK_ANSI_Grave,
+        ));
+    }
+
+    #[test]
+    fn empty_unmod_modifier_clearing_respects_cmd_alnum() {
+        assert!(should_clear_modifiers_for_empty_unmod(
+            "",
+            Modifiers::CTRL,
+            kVK_ANSI_RightBracket,
+        ));
+        assert!(!should_clear_modifiers_for_empty_unmod(
+            "",
+            Modifiers::SUPER,
+            kVK_ANSI_W,
+        ));
+        assert!(!should_clear_modifiers_for_empty_unmod(
+            "w",
+            Modifiers::SUPER,
+            kVK_ANSI_W,
         ));
     }
 }
@@ -3825,8 +3906,7 @@ impl WindowView {
         // That shows up here as unmod=`` with modifiers=CTRL.  In this situation
         // we want to cancel the modifiers out so that we just focus on
         // `chars` instead.
-        let command_alnum_shortcut = is_command_alnum_shortcut(modifiers, virtual_key);
-        let modifiers = if unmod.is_empty() && !command_alnum_shortcut {
+        let modifiers = if should_clear_modifiers_for_empty_unmod(unmod, modifiers, virtual_key) {
             Modifiers::NONE
         } else {
             modifiers
@@ -4059,13 +4139,7 @@ impl WindowView {
             virtual_key,
         );
 
-        let special_shortcut = should_intercept_special_shortcut(chars, modifiers, virtual_key);
-        let command_alnum_shortcut = is_command_alnum_shortcut(modifiers, virtual_key);
-
-        let command_non_menu_key =
-            modifiers.contains(Modifiers::SUPER) && is_non_menu_virtual_key(virtual_key);
-
-        if special_shortcut || command_non_menu_key || command_alnum_shortcut {
+        if should_intercept_perform_key_equivalent(chars, modifiers, virtual_key) {
             // Synthesize a key down event for this, because macOS will
             // not do that, even though we tell it that we handled this event.
             // <https://github.com/wezterm/wezterm/issues/1867>
