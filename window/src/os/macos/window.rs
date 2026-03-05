@@ -1794,6 +1794,22 @@ impl WindowInner {
         }
     }
 
+    /// Prepare a regular window to be shown by the global hotkey from any
+    /// active macOS Space (including another app's fullscreen Space).
+    pub(crate) fn prepare_for_global_hotkey_show(&mut self) {
+        if self.is_fullscreen() {
+            return;
+        }
+        unsafe {
+            let mut behavior = self.window.collectionBehavior();
+            behavior.insert(
+                appkit::NSWindowCollectionBehavior::NSWindowCollectionBehaviorMoveToActiveSpace
+                    | appkit::NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
+            );
+            self.window.setCollectionBehavior_(behavior);
+        }
+    }
+
     fn hide(&mut self) {
         unsafe {
             NSWindow::miniaturize_(*self.window, *self.window);

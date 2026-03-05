@@ -299,6 +299,9 @@ fn toggle_hotkey_window() {
     };
 
     if !existing_windows.is_empty() {
+        for window in &existing_windows {
+            window.borrow_mut().prepare_for_global_hotkey_show();
+        }
         unsafe {
             let () = msg_send![NSApp(), unhide: NSApp()];
             let current_app = NSRunningApplication::currentApplication(nil);
