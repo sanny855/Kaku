@@ -828,7 +828,7 @@ impl Tab {
             .lock()
             .swap_active_with_index(pane_index, keep_focus);
         Self::notify_focused_pane(focused_pane_id);
-        None
+        focused_pane_id.map(|_| ())
     }
 
     /// Computes the size of the pane that would result if the specified
@@ -2618,15 +2618,16 @@ mod test {
         assert_eq!(80, panes[0].width);
         assert_eq!(24, panes[0].height);
 
-        assert!(tab
-            .compute_split_size(
+        assert!(
+            tab.compute_split_size(
                 1,
                 SplitRequest {
                     direction: SplitDirection::Horizontal,
                     ..Default::default()
                 }
             )
-            .is_none());
+            .is_none()
+        );
 
         let horz_size = tab
             .compute_split_size(
