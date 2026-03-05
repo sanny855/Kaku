@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-SOURCE_LINE='[[ "${TERM:-}" == "kaku" && -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh" # Kaku Shell Integration'
+SOURCE_LINE='[[ -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh" # Kaku Shell Integration'
 
 normalize_kaku_source_line_file() {
   local input_file="$1"
@@ -88,6 +88,12 @@ run_normalize \
   0 \
   $'export PATH="$HOME/bin:$PATH"\n'"$SOURCE_LINE"$'\n' \
   "legacy line is replaced"
+
+run_normalize \
+  $'[[ -f "\\/Users/lex/.config/kaku/zsh/kaku.zsh" ]] && source "\\/Users/lex/.config/kaku/zsh/kaku.zsh" # Kaku Shell Integration\n' \
+  0 \
+  "$SOURCE_LINE"$'\n' \
+  "escaped absolute path line is normalized"
 
 run_normalize \
   $'# [[ -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh"\n'"$SOURCE_LINE"$'\n'"$SOURCE_LINE"$'\n' \

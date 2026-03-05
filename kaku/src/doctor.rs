@@ -520,6 +520,7 @@ fn render_text_report(report: &DoctorReport) -> String {
 struct ZshrcSourceCheck {
     guarded_active_lines: usize,
     unguarded_active_lines: usize,
+    malformed_escaped_path_lines: usize,
     read_error: Option<String>,
     missing_file: bool,
     commented_example: bool,
@@ -531,7 +532,9 @@ impl ZshrcSourceCheck {
     }
 
     fn all_active_lines_guarded(&self) -> bool {
-        self.has_active_lines() && self.unguarded_active_lines == 0
+        self.has_active_lines()
+            && self.unguarded_active_lines == 0
+            && self.malformed_escaped_path_lines == 0
     }
 
     fn details(&self, zshrc: &Path) -> Vec<String> {
@@ -559,6 +562,12 @@ impl ZshrcSourceCheck {
                 "At least one Kaku source line is active in all terminals. Expected TERM=kaku guard on every active line."
                     .to_string(),
             );
+        }
+        if self.malformed_escaped_path_lines > 0 {
+            details.push(format!(
+                "Found {} malformed Kaku source line(s) with escaped absolute paths (for example, \"\\/Users/...\"), which prevents loading kaku.zsh",
+                self.malformed_escaped_path_lines
+            ));
         }
         if self.commented_example {
             details.push("Found a commented Kaku source line".to_string());
@@ -594,6 +603,10 @@ fn check_zshrc_source_line(zshrc: &Path) -> ZshrcSourceCheck {
             result.commented_example = true;
             continue;
         }
+        if is_malformed_escaped_kaku_source_line(trimmed) {
+            result.malformed_escaped_path_lines += 1;
+            continue;
+        }
         if is_active_kaku_source_line(trimmed) {
             // Treat both `${TERM:-}` and `$TERM` guards as valid legacy/current
             // forms, then require an equality check against `kaku`.
@@ -620,6 +633,16 @@ fn is_active_kaku_source_line(trimmed_line: &str) -> bool {
         return false;
     }
     contains_source_command(trimmed_line)
+}
+
+fn is_malformed_escaped_kaku_source_line(trimmed_line: &str) -> bool {
+    if trimmed_line.starts_with('#') || !trimmed_line.contains("kaku/zsh/kaku.zsh") {
+        return false;
+    }
+    if !contains_source_command(trimmed_line) {
+        return false;
+    }
+    trimmed_line.contains("\"\\/") || trimmed_line.contains("'\\/")
 }
 
 fn probe_wrapper(wrapper: &Path) -> DoctorCheck {
@@ -858,6 +881,23 @@ mod tests {
         assert!(check.commented_example);
         assert_eq!(check.unguarded_active_lines, 1);
         assert_eq!(check.guarded_active_lines, 1);
+        assert!(!check.all_active_lines_guarded());
+    }
+
+    #[test]
+    fn escaped_absolute_path_source_line_is_marked_malformed() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join(".zshrc");
+        fs::write(
+            &path,
+            r#"[[ "${TERM:-}" == "kaku" && -f "\/Users/lex/.config/kaku/zsh/kaku.zsh" ]] && source "\/Users/lex/.config/kaku/zsh/kaku.zsh""#,
+        )
+        .expect("write zshrc");
+
+        let check = check_zshrc_source_line(&path);
+        assert_eq!(check.guarded_active_lines, 0);
+        assert_eq!(check.unguarded_active_lines, 0);
+        assert_eq!(check.malformed_escaped_path_lines, 1);
         assert!(!check.all_active_lines_guarded());
     }
 }
