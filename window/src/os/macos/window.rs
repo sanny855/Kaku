@@ -2094,10 +2094,7 @@ fn decoration_to_mask(
             | NSWindowStyleMask::NSResizableWindowMask
             | NSWindowStyleMask::NSFullSizeContentViewWindowMask
     } else if decorations == WindowDecorations::NONE {
-        NSWindowStyleMask::NSTitledWindowMask
-            | NSWindowStyleMask::NSClosableWindowMask
-            | NSWindowStyleMask::NSMiniaturizableWindowMask
-            | NSWindowStyleMask::NSFullSizeContentViewWindowMask
+        NSWindowStyleMask::NSBorderlessWindowMask
     } else if decorations == WindowDecorations::TITLE {
         NSWindowStyleMask::NSTitledWindowMask
             | NSWindowStyleMask::NSClosableWindowMask
@@ -2903,6 +2900,16 @@ mod tests {
             Modifiers::SUPER,
             kVK_ANSI_W,
         ));
+    }
+
+    #[test]
+    fn none_decorations_use_a_borderless_window() {
+        let mask = decoration_to_mask(
+            WindowDecorations::NONE,
+            IntegratedTitleButtonStyle::MacOsNative,
+        );
+
+        assert_eq!(mask, NSWindowStyleMask::NSBorderlessWindowMask);
     }
 }
 

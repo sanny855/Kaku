@@ -1,4 +1,4 @@
-pub mod theme;
+pub 
 mod tui;
 
 use anyhow::Context;
@@ -26,7 +26,7 @@ fn to_hex(color: SrgbaTuple) -> String {
 
 /// Returns OpenCode theme JSON derived from the user's current Kaku palette.
 pub fn opencode_theme_json() -> String {
-    let palette = theme::current_theme_palette();
+    let palette = crate::tui_core::theme::current_theme_palette();
 
     let warning = palette.accent;
     let success = palette.secondary;

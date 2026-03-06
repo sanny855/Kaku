@@ -18,6 +18,7 @@ mod config_tui;
 mod doctor;
 mod init;
 mod reset;
+mod tui_core;
 mod update;
 mod utils;
 

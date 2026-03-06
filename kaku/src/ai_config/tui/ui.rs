@@ -3,7 +3,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
-use super::super::theme::{bg, green, muted, panel, purple, red, text_fg, yellow};
+use crate::tui_core::theme::{bg, green, muted, panel, purple, red, text_fg, yellow};
 use super::App;
 
 pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
