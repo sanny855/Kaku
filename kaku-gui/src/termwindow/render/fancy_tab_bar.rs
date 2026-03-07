@@ -379,10 +379,8 @@ impl crate::TermWindow {
                     == IntegratedTitleButtonStyle::MacOsNative);
 
         let is_fullscreen = self.window_state.contains(window::WindowState::FULL_SCREEN);
-        // In fullscreen, macOS native buttons are hidden, so no extra space needed
         let left_padding = if is_fullscreen {
-            // Minimal padding in fullscreen - tabs start near the left edge
-            Dimension::Pixels(8.0)
+            Dimension::Pixels(self.content_left_inset())
         } else if window_buttons_at_left {
             if self.config.integrated_title_button_style == IntegratedTitleButtonStyle::MacOsNative
             {

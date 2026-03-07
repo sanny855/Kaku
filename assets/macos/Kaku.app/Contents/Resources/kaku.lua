@@ -228,10 +228,11 @@ local function get_default_padding()
 end
 
 local function get_fullscreen_padding()
+  local default_padding = get_default_padding()
   if low_resolution_screen then
-    return { left = '14px', right = '14px', top = '14px', bottom = '0px' }
+    return { left = default_padding.left, right = default_padding.right, top = '14px', bottom = '0px' }
   end
-  return { left = '20px', right = '20px', top = '20px', bottom = '0px' }
+  return { left = default_padding.left, right = default_padding.right, top = '20px', bottom = '0px' }
 end
 
 local function get_yazi_padding()
@@ -242,10 +243,11 @@ local function get_yazi_padding()
 end
 
 local function get_yazi_fullscreen_padding()
+  local yazi_padding = get_yazi_padding()
   if low_resolution_screen then
-    return { left = '14px', right = '14px', top = '8px', bottom = '0px' }
+    return { left = yazi_padding.left, right = yazi_padding.right, top = '8px', bottom = '0px' }
   end
-  return { left = '20px', right = '20px', top = '10px', bottom = '0px' }
+  return { left = yazi_padding.left, right = yazi_padding.right, top = '10px', bottom = '0px' }
 end
 
 local fullscreen_uniform_padding = get_fullscreen_padding()

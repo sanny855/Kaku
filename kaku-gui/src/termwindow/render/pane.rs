@@ -60,7 +60,8 @@ impl crate::TermWindow {
         let config = self.config.clone();
         let palette = pos.pane.palette();
 
-        let (padding_left, padding_top) = self.padding_left_top();
+        let (_, padding_top) = self.padding_left_top();
+        let content_left = self.content_left_inset();
 
         let tab_bar_height = if self.show_tab_bar {
             self.tab_bar_pixel_height()
@@ -114,13 +115,10 @@ impl crate::TermWindow {
         let background_rect = {
             // We want to fill out to the edges of the splits
             let (x, width_delta) = if pos.left == 0 {
-                (
-                    0.,
-                    padding_left + border.left.get() as f32 + (cell_width * split_col_gutter / 2.0),
-                )
+                (0., content_left + (cell_width * split_col_gutter / 2.0))
             } else {
                 (
-                    padding_left + border.left.get() as f32 - (cell_width * split_col_gutter / 2.0)
+                    content_left - (cell_width * split_col_gutter / 2.0)
                         + (pos.left as f32 * cell_width),
                     cell_width * split_col_gutter,
                 )
@@ -356,9 +354,8 @@ impl crate::TermWindow {
             // so no additional pixel offset is needed here.
             let pane_pixel_width = pos.width as f32 * cell_width;
 
-            let left_pixel_x = padding_left
-                + border.left.get() as f32
-                + (pos.left as f32 * self.render_metrics.cell_size.width as f32);
+            let left_pixel_x =
+                content_left + (pos.left as f32 * self.render_metrics.cell_size.width as f32);
 
             let content_pixel_width = pane_pixel_width;
 
@@ -615,7 +612,8 @@ impl crate::TermWindow {
         let gap = self.config.split_pane_gap as usize;
         let split_col_gutter = (1 + 2 * gap).max(1) as f32;
         let split_row_gutter = gap.max(1) as f32;
-        let (padding_left, padding_top) = self.padding_left_top();
+        let (_, padding_top) = self.padding_left_top();
+        let content_left = self.content_left_inset();
         let tab_bar_height = if self.show_tab_bar {
             self.tab_bar_pixel_height()?
         } else {
@@ -634,13 +632,10 @@ impl crate::TermWindow {
 
         // We want to fill out to the edges of the splits
         let (x, width_delta) = if pos.left == 0 {
-            (
-                0.,
-                padding_left + border.left.get() as f32 + (cell_width * split_col_gutter / 2.0),
-            )
+            (0., content_left + (cell_width * split_col_gutter / 2.0))
         } else {
             (
-                padding_left + border.left.get() as f32 - (cell_width * split_col_gutter / 2.0)
+                content_left - (cell_width * split_col_gutter / 2.0)
                     + (pos.left as f32 * cell_width),
                 cell_width * split_col_gutter,
             )
@@ -687,7 +682,7 @@ impl crate::TermWindow {
         let pane_pixel_width = pos.width as f32 * cell_width;
         let pane_pixel_height = pos.height as f32 * cell_height;
         let content_rect = euclid::rect(
-            padding_left + border.left.get() as f32 + (pos.left as f32 * cell_width),
+            content_left + (pos.left as f32 * cell_width),
             top_pixel_y + (pos.top as f32 * cell_height),
             pane_pixel_width,
             pane_pixel_height,

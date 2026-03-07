@@ -25,9 +25,10 @@ impl crate::TermWindow {
             0.
         } + border.top.get() as f32;
 
-        let (padding_left, padding_top) = self.padding_left_top();
+        let (_, padding_top) = self.padding_left_top();
+        let content_left = self.content_left_inset();
         let pos_y = split.top as f32 * cell_height + first_row_offset + padding_top;
-        let pos_x = split.left as f32 * cell_width + padding_left + border.left.get() as f32;
+        let pos_x = split.left as f32 * cell_width + content_left;
 
         let split_thickness = self.config.split_thickness;
         let is_horizontal = split.direction == SplitDirection::Horizontal;
@@ -129,18 +130,14 @@ impl crate::TermWindow {
         // UI item for hit testing
         let (x, y, width, height) = if is_horizontal {
             (
-                border.left.get() as usize
-                    + padding_left as usize
-                    + (split.left * cell_width as usize),
+                content_left as usize + (split.left * cell_width as usize),
                 padding_top as usize + first_row_offset as usize + split.top * cell_height as usize,
                 cell_width as usize,
                 split.size * cell_height as usize,
             )
         } else {
             (
-                border.left.get() as usize
-                    + padding_left as usize
-                    + (split.left * cell_width as usize),
+                content_left as usize + (split.left * cell_width as usize),
                 padding_top as usize + first_row_offset as usize + split.top * cell_height as usize,
                 split.size * cell_width as usize,
                 cell_height as usize,

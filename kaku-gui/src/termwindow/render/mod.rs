@@ -391,6 +391,12 @@ impl crate::TermWindow {
         (padding_left + left_gap, padding_top + top_gap)
     }
 
+    /// Returns the pixel x-position where terminal content begins.
+    pub fn content_left_inset(&self) -> f32 {
+        let (padding_left, _) = self.padding_left_top();
+        padding_left + self.get_os_border().left.get() as f32
+    }
+
     fn resolve_lock_glyph(
         &self,
         style: &TextStyle,

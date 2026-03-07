@@ -397,7 +397,7 @@ impl crate::TermWindow {
             if pos.is_active && num_panes > 1 {
                 let cell_width = self.render_metrics.cell_size.width as f32;
                 let cell_height = self.render_metrics.cell_size.height as f32;
-                let (padding_left, padding_top) = self.padding_left_top();
+                let (_, padding_top) = self.padding_left_top();
                 let border = self.get_os_border();
                 let tab_bar_height = if self.show_tab_bar {
                     self.tab_bar_pixel_height().unwrap_or(0.)
@@ -411,9 +411,7 @@ impl crate::TermWindow {
                 };
                 let top_pixel_y = top_bar_height + padding_top + border.top.get() as f32;
 
-                let x = padding_left
-                    + border.left.get() as f32
-                    + ((pos.left + pos.width) as f32 * cell_width);
+                let x = self.content_left_inset() + ((pos.left + pos.width) as f32 * cell_width);
                 let y = top_pixel_y + (pos.top as f32 * cell_height);
                 let is_top_pane = pos.top == 0;
                 active_pane_top_right = Some((x, y, is_top_pane));
