@@ -59,15 +59,17 @@ fn run_app(
             continue;
         }
 
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            app.finalize_active_input();
+            if let Err(e) = app.save_if_dirty() {
+                return (Err(e), app.has_saved);
+            }
+            return (Ok(()), app.has_saved);
+        }
+
         match app.mode {
             Mode::Normal => match key.code {
-                // Q / ESC / Ctrl+C: exit (auto-save if dirty, signal if any save occurred)
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if let Err(e) = app.save_if_dirty() {
-                        return (Err(e), app.has_saved);
-                    }
-                    return (Ok(()), app.has_saved);
-                }
+                // Q / ESC: exit (auto-save if dirty, signal if any save occurred)
                 KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
                     if let Err(e) = app.save_if_dirty() {
                         return (Err(e), app.has_saved);
@@ -580,6 +582,14 @@ impl App {
         Ok(())
     }
 
+    fn finalize_active_input(&mut self) {
+        match self.mode {
+            Mode::Editing => self.confirm_edit(),
+            Mode::Selecting => self.confirm_select(),
+            Mode::Normal => {}
+        }
+    }
+
     fn start_edit(&mut self) {
         let field = &self.fields[self.selected];
         if field.has_options() {
@@ -1077,5 +1087,23 @@ mod tests {
         app.fields[idx].value = "Top".to_string();
 
         assert_eq!(app.to_lua_value(&app.fields[idx]), "false");
+    }
+
+    #[test]
+    fn finalize_active_input_commits_edit_buffer() {
+        let mut app = App::new();
+        let idx = app
+            .fields
+            .iter()
+            .position(|f| f.lua_key == "font")
+            .expect("font field to exist");
+        app.selected = idx;
+
+        app.start_edit();
+        app.edit_insert('X');
+        app.finalize_active_input();
+
+        assert_eq!(app.fields[idx].value, "JetBrains MonoX");
+        assert!(app.dirty);
     }
 }
