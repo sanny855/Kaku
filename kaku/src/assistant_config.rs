@@ -5,6 +5,7 @@
 //!
 //! The configuration is stored in `assistant.toml` in the user's Kaku config directory.
 
+use crate::utils::write_atomic;
 use anyhow::{anyhow, Context};
 use std::path::{Path, PathBuf};
 
@@ -71,6 +72,30 @@ pub fn ensure_assistant_toml_exists() -> anyhow::Result<PathBuf> {
     }
 
     Ok(path)
+}
+
+/// Reads whether Kaku Assistant is enabled.
+///
+/// Missing or malformed values fall back to `true` so the default template
+/// remains the effective behavior until the user explicitly turns it off.
+pub fn read_enabled() -> anyhow::Result<bool> {
+    let path = ensure_assistant_toml_exists()?;
+    let raw = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+
+    Ok(raw
+        .parse::<toml::Value>()
+        .ok()
+        .and_then(|parsed| parsed.get("enabled").and_then(|value| value.as_bool()))
+        .unwrap_or(true))
+}
+
+/// Writes the enabled flag while preserving the rest of assistant.toml.
+pub fn write_enabled(enabled: bool) -> anyhow::Result<()> {
+    let path = ensure_assistant_toml_exists()?;
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|_| default_assistant_toml_template());
+    let updated = set_top_level_bool_key_in_content(&raw, "enabled", enabled);
+    write_atomic(&path, updated.as_bytes()).with_context(|| format!("write {}", path.display()))?;
+    Ok(())
 }
 
 /// Returns the default assistant.toml configuration template.
@@ -150,6 +175,55 @@ fn ensure_required_keys_in_content(raw: &str) -> (String, bool) {
     }
 
     (updated, true)
+}
+
+fn set_top_level_bool_key_in_content(content: &str, key: &str, value: bool) -> String {
+    let replacement = format!("{key} = {value}");
+    let mut updated_lines = Vec::new();
+    let mut replaced = false;
+    let mut in_top_level = true;
+
+    for line in content.lines() {
+        let head = line.split('#').next().unwrap_or("").trim_start();
+        if in_top_level && head.starts_with('[') {
+            in_top_level = false;
+        }
+
+        if in_top_level {
+            let raw_head = line.split('#').next().unwrap_or("").trim();
+            if let Some((name, _)) = raw_head.split_once('=') {
+                if name.trim() == key {
+                    updated_lines.push(replacement.clone());
+                    replaced = true;
+                    continue;
+                }
+            }
+        }
+
+        updated_lines.push(line.to_string());
+    }
+
+    let mut updated = updated_lines.join("\n");
+    if !replaced {
+        let insert_block = format!("{replacement}\n");
+        let insert_at = first_table_header_offset(content).unwrap_or(content.len());
+        let (before, after) = content.split_at(insert_at);
+        updated = String::with_capacity(content.len() + insert_block.len() + 2);
+
+        let before_trimmed = before.trim_end_matches(['\r', '\n']);
+        updated.push_str(before_trimmed);
+        if !before_trimmed.is_empty() {
+            updated.push('\n');
+        }
+        updated.push_str(&insert_block);
+        if !after.is_empty() {
+            updated.push_str(after.trim_start_matches(['\r', '\n']));
+        }
+    } else if content.ends_with('\n') {
+        updated.push('\n');
+    }
+
+    updated
 }
 
 fn first_table_header_offset(content: &str) -> Option<usize> {
@@ -248,5 +322,21 @@ api_key = "x"
     fn default_template_includes_custom_headers_hint() {
         let template = default_assistant_toml_template();
         assert!(template.contains("custom_headers"));
+    }
+
+    #[test]
+    fn set_enabled_replaces_existing_value() {
+        let content = "enabled = true\nmodel = \"x\"\n";
+        let updated = set_top_level_bool_key_in_content(content, "enabled", false);
+        assert_eq!(updated, "enabled = false\nmodel = \"x\"\n");
+    }
+
+    #[test]
+    fn set_enabled_inserts_missing_value_before_table() {
+        let content = "model = \"x\"\n\n[provider]\nname = \"y\"\n";
+        let updated = set_top_level_bool_key_in_content(content, "enabled", true);
+        let enabled_pos = updated.find("enabled = true").expect("enabled inserted");
+        let table_pos = updated.find("[provider]").expect("table exists");
+        assert!(enabled_pos < table_pos);
     }
 }

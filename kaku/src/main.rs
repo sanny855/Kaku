@@ -104,10 +104,7 @@ enum SubCommand {
     #[command(short_flag_alias = 'e', hide = true)]
     BlockingStart(StartCommand),
 
-    #[command(
-        name = "ai",
-        about = "Manage Kaku Assistant and AI coding tools configuration"
-    )]
+    #[command(name = "ai", about = "Manage AI settings")]
     Ai(ai_config::AiConfigCommand),
 
     #[command(name = "config", about = "Configure Kaku settings")]
@@ -364,12 +361,12 @@ fn select_main_menu_command() -> anyhow::Result<Option<SubCommand>> {
     }
 
     const MENU_ITEMS: [(&str, &str, MenuChoice); 6] = [
+        ("ai", "Manage AI tools and Kaku Assistant", MenuChoice::Ai),
         (
-            "ai",
-            "Manage Kaku Assistant and AI tool settings",
-            MenuChoice::Ai,
+            "config",
+            "Manage terminal and assistant settings",
+            MenuChoice::Config,
         ),
-        ("config", "Open ~/.config/kaku/kaku.lua", MenuChoice::Config),
         ("init", "Initialize shell integration", MenuChoice::Init),
         (
             "doctor",

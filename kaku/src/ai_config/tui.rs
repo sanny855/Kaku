@@ -1,14 +1,19 @@
 use crate::assistant_config;
 use crate::utils::{is_jsonc_path, parse_json_or_jsonc, write_atomic};
 use anyhow::Context;
+use chrono::{DateTime, Utc};
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
     MouseEventKind,
 };
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -85,7 +90,12 @@ const FACTORY_DROID_DEFAULT_AUTONOMY: &str = "normal";
 const FACTORY_DROID_REASONING_OPTIONS: [&str; 5] = ["off", "none", "low", "medium", "high"];
 const FACTORY_DROID_AUTONOMY_OPTIONS: [&str; 5] =
     ["normal", "spec", "auto-low", "auto-medium", "auto-high"];
+const CODEX_USAGE_CACHE_TTL: Duration = Duration::from_secs(120);
+const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const UI_STATUS_TTL: Duration = Duration::from_secs(3);
 const UI_ERROR_TTL: Duration = Duration::from_secs(5);
+const CLAUDE_OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const CLAUDE_OAUTH_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 
 static UI_ERRORS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
@@ -139,6 +149,7 @@ struct ToolState {
     tool: Tool,
     installed: bool,
     fields: Vec<FieldEntry>,
+    summary: Option<String>,
 }
 
 impl ToolState {
@@ -156,6 +167,7 @@ impl ToolState {
                             options: vec![],
                             editable: false,
                         }],
+                        summary: Some("Setup failed".into()),
                     };
                 }
             }
@@ -163,16 +175,21 @@ impl ToolState {
             tool.config_path()
         };
 
-        if tool != Tool::KakuAssistant && !path.exists() {
+        let extra_exists = matches!(tool, Tool::Codex)
+            && config::HOME_DIR.join(".codex").join("auth.json").exists();
+
+        if tool != Tool::KakuAssistant && !path.exists() && !extra_exists {
             return ToolState {
                 tool,
                 installed: false,
                 fields: Vec::new(),
+                summary: None,
             };
         }
 
         let raw = match std::fs::read_to_string(&path) {
             Ok(s) => s,
+            Err(e) if e.kind() == io::ErrorKind::NotFound && extra_exists => String::new(),
             Err(e) => {
                 log::warn!("failed to read config for {}: {}", tool.label(), e);
                 return ToolState {
@@ -184,40 +201,716 @@ impl ToolState {
                         options: vec![],
                         ..Default::default()
                     }],
+                    summary: Some("Config unreadable".into()),
                 };
             }
         };
 
-        let fields = match tool {
-            Tool::KakuAssistant => extract_kaku_assistant_fields(&raw),
+        let (fields, usage_summary) = match tool {
+            Tool::KakuAssistant => (extract_kaku_assistant_fields(&raw), None),
             Tool::ClaudeCode => {
                 let parsed = parse_json_or_jsonc_with_debug(&raw, tool.label());
-                extract_claude_code_fields(&parsed)
+                (
+                    extract_claude_code_fields(&parsed),
+                    load_claude_usage_snapshot().and_then(|snapshot| snapshot.summary),
+                )
             }
-            Tool::Codex => extract_codex_fields(&raw),
+            Tool::Codex => (
+                extract_codex_fields(&raw),
+                load_codex_usage_snapshot().and_then(|snapshot| snapshot.summary),
+            ),
             Tool::Gemini => {
                 let parsed = parse_json_with_debug(&raw, tool.label());
-                extract_gemini_fields(&parsed)
+                (
+                    extract_gemini_fields(&parsed),
+                    gemini_quota_summary(&parsed),
+                )
             }
             Tool::Copilot => {
                 let parsed = parse_json_with_debug(&raw, tool.label());
-                extract_copilot_fields(&parsed)
+                (
+                    extract_copilot_fields(&parsed),
+                    load_copilot_usage_snapshot().and_then(|snapshot| snapshot.summary),
+                )
             }
             Tool::FactoryDroid => {
                 let parsed = parse_json_with_debug(&raw, tool.label());
-                extract_factory_droid_fields(&parsed)
+                (extract_factory_droid_fields(&parsed), None)
             }
             Tool::OpenClaw => {
                 let parsed = parse_json_or_jsonc_with_debug(&raw, tool.label());
-                extract_openclaw_fields(&parsed)
+                (extract_openclaw_fields(&parsed), None)
             }
         };
+
+        let summary = summarize_tool_fields(tool, true, &fields, usage_summary.as_deref());
 
         ToolState {
             tool,
             installed: true,
             fields,
+            summary,
         }
+    }
+}
+
+fn field_value<'a>(fields: &'a [FieldEntry], key: &str) -> Option<&'a str> {
+    fields
+        .iter()
+        .find(|field| field.key == key)
+        .map(|field| field.value.as_str())
+}
+
+fn compact_summary_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value == "—" {
+        return None;
+    }
+
+    let value = value
+        .strip_prefix("✓ ")
+        .or_else(|| value.strip_prefix("✗ "))
+        .unwrap_or(value)
+        .trim();
+    let value = value.strip_suffix(" (default)").unwrap_or(value).trim();
+
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn summarize_tool_fields(
+    tool: Tool,
+    installed: bool,
+    fields: &[FieldEntry],
+    usage_summary: Option<&str>,
+) -> Option<String> {
+    if !installed {
+        return None;
+    }
+
+    if tool == Tool::KakuAssistant {
+        let model = field_value(fields, "Model").and_then(compact_summary_value)?;
+        let has_api_key = field_value(fields, "API Key").is_some_and(|value| value != "—");
+        if has_api_key {
+            return Some(format!("Ready · {model}"));
+        }
+        return Some(format!("Setup required · {model}"));
+    }
+
+    if matches!(
+        tool,
+        Tool::Codex | Tool::ClaudeCode | Tool::Gemini | Tool::Copilot
+    ) {
+        return usage_summary
+            .map(str::to_string)
+            .or_else(|| Some("Quota unavailable".into()));
+    }
+
+    let mut parts = Vec::new();
+    if let Some(account) = field_value(fields, "Auth").and_then(compact_summary_value) {
+        parts.push(account);
+    }
+
+    let model = field_value(fields, "Model")
+        .or_else(|| field_value(fields, "Primary Model"))
+        .and_then(compact_summary_value);
+    if let Some(model) = model {
+        parts.push(model);
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
+}
+
+fn should_collapse_kaku_assistant(fields: &[FieldEntry]) -> bool {
+    field_value(fields, "API Key").is_some_and(|value| value != "—")
+}
+
+fn kaku_assistant_visible() -> bool {
+    assistant_config::read_enabled().unwrap_or(true)
+}
+
+struct CodexUsageSnapshot {
+    summary: Option<String>,
+}
+
+struct ClaudeUsageSnapshot {
+    summary: Option<String>,
+}
+
+struct CopilotUsageSnapshot {
+    summary: Option<String>,
+}
+
+fn codex_usage_cache_path() -> PathBuf {
+    config::HOME_DIR
+        .join(".cache")
+        .join("kaku")
+        .join("codex_usage.json")
+}
+
+fn claude_usage_cache_path() -> PathBuf {
+    config::HOME_DIR
+        .join(".cache")
+        .join("kaku")
+        .join("claude_usage.json")
+}
+
+fn copilot_usage_cache_path() -> PathBuf {
+    config::HOME_DIR
+        .join(".cache")
+        .join("kaku")
+        .join("copilot_usage.json")
+}
+
+fn read_codex_auth_info() -> Option<(String, String)> {
+    let auth_path = config::HOME_DIR.join(".codex").join("auth.json");
+    let auth_json = read_json_file_with_debug(&auth_path, "codex auth status")?;
+
+    let access_token = auth_json
+        .get("tokens")
+        .and_then(|tokens| tokens.get("access_token"))
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            auth_json
+                .get("access_token")
+                .and_then(|value| value.as_str())
+        })?
+        .to_string();
+
+    let account_id = auth_json
+        .get("tokens")
+        .and_then(|tokens| tokens.get("account_id"))
+        .and_then(|value| value.as_str())
+        .or_else(|| auth_json.get("account_id").and_then(|value| value.as_str()))
+        .map(|value| value.to_string())
+        .or_else(|| {
+            decode_jwt_payload_with_debug(&access_token, "codex auth status").and_then(|payload| {
+                payload
+                    .get("chatgpt_account_id")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+            })
+        })?;
+
+    Some((access_token, account_id))
+}
+
+fn format_duration_short(total_seconds: i64) -> Option<String> {
+    if total_seconds <= 0 {
+        return None;
+    }
+
+    let days = total_seconds / 86_400;
+    let hours = (total_seconds % 86_400) / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+
+    if days > 0 {
+        Some(format!("{days}d{hours}h"))
+    } else if hours > 0 {
+        Some(format!("{hours}h{minutes}m"))
+    } else {
+        Some(format!("{minutes}m"))
+    }
+}
+
+fn format_reset_time_from_epoch(reset_at: i64) -> Option<String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    format_duration_short(reset_at - now)
+}
+
+fn format_reset_time_from_iso(reset_at: &str) -> Option<String> {
+    let reset_at = DateTime::parse_from_rfc3339(reset_at).ok()?;
+    let reset_at = reset_at.with_timezone(&Utc);
+    format_duration_short((reset_at - Utc::now()).num_seconds())
+}
+
+fn format_percent_value(percent: f64) -> String {
+    if (percent.fract()).abs() < 0.05 {
+        format!("{percent:.0}%")
+    } else {
+        format!("{percent:.1}%")
+    }
+}
+
+fn format_remaining_percent_value(used_percent: f64) -> String {
+    format_percent_value((100.0 - used_percent).clamp(0.0, 100.0))
+}
+
+fn format_remaining_window_value(
+    label: &str,
+    used_percent: f64,
+    reset_in: Option<String>,
+) -> String {
+    let mut value = format!(
+        "{label} remain {}",
+        format_remaining_percent_value(used_percent)
+    );
+    if let Some(reset_in) = reset_in {
+        value.push_str(" · reset ");
+        value.push_str(&reset_in);
+    }
+    value
+}
+
+fn format_remaining_count_value(value: f64) -> String {
+    if (value.fract()).abs() < 0.05 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.1}")
+    }
+}
+
+fn format_codex_usage_value(label: &str, window: &serde_json::Value) -> Option<String> {
+    let used_percent = window.get("used_percent")?.as_f64()?;
+    let reset_in = window
+        .get("reset_at")
+        .and_then(|value| value.as_i64())
+        .and_then(format_reset_time_from_epoch);
+    Some(format_remaining_window_value(label, used_percent, reset_in))
+}
+
+fn parse_codex_usage_snapshot(data: &serde_json::Value) -> Option<CodexUsageSnapshot> {
+    let rate_limit = data.get("rate_limit")?;
+    let current_value = rate_limit
+        .get("primary_window")
+        .and_then(|window| format_codex_usage_value("5h", window));
+    let weekly_value = rate_limit
+        .get("secondary_window")
+        .and_then(|window| format_codex_usage_value("7d", window));
+
+    let summary = match (current_value, weekly_value) {
+        (Some(current), Some(weekly)) => Some(format!("{current}  |  {weekly}")),
+        (Some(current), None) => Some(current),
+        (None, Some(weekly)) => Some(weekly),
+        (None, None) => None,
+    };
+
+    if summary.is_none() {
+        None
+    } else {
+        Some(CodexUsageSnapshot { summary })
+    }
+}
+
+fn codex_usage_cache_is_fresh(path: &Path) -> bool {
+    path.metadata()
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|elapsed| elapsed < CODEX_USAGE_CACHE_TTL)
+}
+
+fn load_codex_usage_json_from_cache(path: &Path) -> Option<serde_json::Value> {
+    read_json_file_with_debug(path, "codex usage cache")
+}
+
+fn write_json_cache(path: &Path, value: &serde_json::Value) {
+    if let Some(parent) = path.parent() {
+        if let Err(err) = config::create_user_owned_dirs(parent) {
+            log::debug!("failed to create cache dir {}: {}", parent.display(), err);
+            return;
+        }
+    }
+
+    match serde_json::to_vec(value) {
+        Ok(bytes) => {
+            if let Err(err) = write_atomic(path, &bytes) {
+                log::debug!("failed to write {}: {}", path.display(), err);
+            }
+        }
+        Err(err) => log::debug!("failed to serialize {}: {}", path.display(), err),
+    }
+}
+
+fn run_curl(args: &[&str]) -> Option<serde_json::Value> {
+    let output = std::process::Command::new(OsStr::new("/usr/bin/curl"))
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::debug!(
+            "curl failed with status {}: {}",
+            output.status,
+            stderr.trim()
+        );
+        return None;
+    }
+
+    let raw = String::from_utf8(output.stdout)
+        .map_err(|err| log::debug!("curl returned non-utf8 stdout: {}", err))
+        .ok()?;
+    serde_json::from_str(&raw)
+        .map_err(|err| log::debug!("failed to parse curl json: {}", err))
+        .ok()
+}
+
+fn fetch_codex_usage_json() -> Option<serde_json::Value> {
+    let cache_path = codex_usage_cache_path();
+    if cache_path.exists() && codex_usage_cache_is_fresh(&cache_path) {
+        return load_codex_usage_json_from_cache(&cache_path);
+    }
+
+    let (access_token, account_id) = read_codex_auth_info()?;
+    let live = run_curl(&[
+        "-sS",
+        "--max-time",
+        "3",
+        "-H",
+        &format!("Authorization: Bearer {access_token}"),
+        "-H",
+        &format!("ChatGPT-Account-Id: {account_id}"),
+        "-H",
+        "Accept: application/json",
+        "https://chatgpt.com/backend-api/wham/usage",
+    ]);
+
+    if let Some(value) = live {
+        write_json_cache(&cache_path, &value);
+        return Some(value);
+    }
+
+    load_codex_usage_json_from_cache(&cache_path)
+}
+
+fn load_codex_usage_snapshot() -> Option<CodexUsageSnapshot> {
+    let data = fetch_codex_usage_json()?;
+    parse_codex_usage_snapshot(&data)
+}
+
+fn load_usage_json_from_cache(path: &Path, context: &str) -> Option<serde_json::Value> {
+    read_json_file_with_debug(path, context)
+}
+
+fn fetch_usage_json_with_cache<F>(
+    path: PathBuf,
+    context: &str,
+    fetcher: F,
+) -> Option<serde_json::Value>
+where
+    F: FnOnce() -> Option<serde_json::Value>,
+{
+    if path.exists() && codex_usage_cache_is_fresh(&path) {
+        return load_usage_json_from_cache(&path, context);
+    }
+
+    if let Some(value) = fetcher() {
+        write_json_cache(&path, &value);
+        return Some(value);
+    }
+
+    load_usage_json_from_cache(&path, context)
+}
+
+fn read_claude_oauth_access_token() -> Option<String> {
+    let output = std::process::Command::new("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::debug!(
+            "claude keychain probe failed with status {}: {}",
+            output.status,
+            stderr.trim()
+        );
+        return None;
+    }
+
+    let raw = String::from_utf8(output.stdout)
+        .map_err(|err| log::debug!("claude keychain probe returned non-utf8 stdout: {}", err))
+        .ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(raw.trim())
+        .map_err(|err| log::debug!("failed to parse claude keychain json: {}", err))
+        .ok()?;
+
+    parsed
+        .get("claudeAiOauth")
+        .and_then(|value| value.get("accessToken"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+}
+
+fn read_claude_oauth_refresh_token() -> Option<String> {
+    let output = std::process::Command::new("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let raw = String::from_utf8(output.stdout).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(raw.trim()).ok()?;
+    parsed
+        .get("claudeAiOauth")
+        .and_then(|value| value.get("refreshToken"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+}
+
+fn refresh_claude_oauth_access_token() -> Option<String> {
+    let refresh_token = read_claude_oauth_refresh_token()?;
+    let refreshed = run_curl(&[
+        "-sS",
+        "--max-time",
+        "5",
+        "-X",
+        "POST",
+        CLAUDE_OAUTH_TOKEN_URL,
+        "-H",
+        "Content-Type: application/x-www-form-urlencoded",
+        "--data-urlencode",
+        "grant_type=refresh_token",
+        "--data-urlencode",
+        &format!("refresh_token={refresh_token}"),
+        "--data-urlencode",
+        &format!("client_id={CLAUDE_OAUTH_CLIENT_ID}"),
+    ])?;
+
+    refreshed
+        .get("access_token")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+}
+
+fn fetch_claude_usage_with_access_token(access_token: &str) -> Option<serde_json::Value> {
+    run_curl(&[
+        "-sS",
+        "--max-time",
+        "3",
+        "-H",
+        &format!("Authorization: Bearer {access_token}"),
+        "-H",
+        "anthropic-beta: oauth-2025-04-20",
+        "-H",
+        "Accept: application/json",
+        "-H",
+        "Content-Type: application/json",
+        "-H",
+        "User-Agent: claude-code/2.0.27",
+        "https://api.anthropic.com/api/oauth/usage",
+    ])
+}
+
+fn fetch_claude_usage_json() -> Option<serde_json::Value> {
+    let cache_path = claude_usage_cache_path();
+    if cache_path.exists() && codex_usage_cache_is_fresh(&cache_path) {
+        if let Some(cached) = load_usage_json_from_cache(&cache_path, "claude usage cache") {
+            if parse_claude_usage_error(&cached).is_none() {
+                return Some(cached);
+            }
+        }
+    }
+
+    let access_token = read_claude_oauth_access_token()?;
+    let live = fetch_claude_usage_with_access_token(&access_token).or_else(|| {
+        let refreshed = refresh_claude_oauth_access_token()?;
+        fetch_claude_usage_with_access_token(&refreshed)
+    });
+
+    if let Some(value) = live {
+        write_json_cache(&cache_path, &value);
+        return Some(value);
+    }
+
+    load_usage_json_from_cache(&cache_path, "claude usage cache")
+}
+
+fn parse_claude_usage_error(data: &serde_json::Value) -> Option<String> {
+    let error = data.get("error")?;
+    let error_type = error.get("type").and_then(|value| value.as_str());
+    let error_code = error
+        .get("details")
+        .and_then(|value| value.get("error_code"))
+        .and_then(|value| value.as_str());
+
+    if matches!(error_type, Some("authentication_error"))
+        || matches!(error_code, Some("token_expired" | "invalid_token"))
+    {
+        return Some("Re-auth required".into());
+    }
+
+    None
+}
+
+fn parse_claude_usage_snapshot(data: &serde_json::Value) -> Option<ClaudeUsageSnapshot> {
+    if let Some(summary) = parse_claude_usage_error(data) {
+        return Some(ClaudeUsageSnapshot {
+            summary: Some(summary),
+        });
+    }
+
+    let current_value = data.get("five_hour").and_then(|window| {
+        let used_percent = window.get("utilization")?.as_f64()?;
+        let reset_in = window
+            .get("resets_at")
+            .and_then(|value| value.as_str())
+            .and_then(format_reset_time_from_iso);
+        Some(format_remaining_window_value("5h", used_percent, reset_in))
+    });
+    let weekly_value = data.get("seven_day").and_then(|window| {
+        let used_percent = window.get("utilization")?.as_f64()?;
+        let reset_in = window
+            .get("resets_at")
+            .and_then(|value| value.as_str())
+            .and_then(format_reset_time_from_iso);
+        Some(format_remaining_window_value("7d", used_percent, reset_in))
+    });
+
+    let summary = match (current_value, weekly_value) {
+        (Some(current), Some(weekly)) => Some(format!("{current}  |  {weekly}")),
+        (Some(current), None) => Some(current),
+        (None, Some(weekly)) => Some(weekly),
+        (None, None) => None,
+    };
+
+    if summary.is_none() {
+        None
+    } else {
+        Some(ClaudeUsageSnapshot { summary })
+    }
+}
+
+fn load_claude_usage_snapshot() -> Option<ClaudeUsageSnapshot> {
+    let data = fetch_claude_usage_json()?;
+    parse_claude_usage_snapshot(&data)
+}
+
+fn read_gh_auth_token() -> Option<String> {
+    let output = std::process::Command::new("gh")
+        .args(["auth", "token"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::debug!(
+            "gh auth token probe failed with status {}: {}",
+            output.status,
+            stderr.trim()
+        );
+        return None;
+    }
+
+    String::from_utf8(output.stdout)
+        .map_err(|err| log::debug!("gh auth token probe returned non-utf8 stdout: {}", err))
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn fetch_copilot_usage_json() -> Option<serde_json::Value> {
+    let cache_path = copilot_usage_cache_path();
+    fetch_usage_json_with_cache(cache_path, "copilot usage cache", || {
+        let token = read_gh_auth_token()?;
+        run_curl(&[
+            "-sS",
+            "--max-time",
+            "3",
+            "-H",
+            &format!("Authorization: token {token}"),
+            "-H",
+            "Accept: application/json",
+            "-H",
+            "Editor-Version: vscode/1.96.2",
+            "-H",
+            "Editor-Plugin-Version: copilot-chat/0.26.7",
+            "-H",
+            "User-Agent: GitHubCopilotChat/0.26.7",
+            "-H",
+            "X-Github-Api-Version: 2025-04-01",
+            "https://api.github.com/copilot_internal/user",
+        ])
+    })
+}
+
+fn parse_copilot_usage_snapshot(data: &serde_json::Value) -> Option<CopilotUsageSnapshot> {
+    let premium = data
+        .get("quota_snapshots")
+        .and_then(|value| value.get("premium_interactions"))?;
+    let remaining = premium
+        .get("remaining")
+        .and_then(|value| value.as_f64())
+        .or_else(|| {
+            premium
+                .get("remaining")
+                .and_then(|value| value.as_i64().map(|v| v as f64))
+        })
+        .or_else(|| {
+            premium
+                .get("remaining")
+                .and_then(|value| value.as_u64().map(|v| v as f64))
+        })
+        .or_else(|| {
+            premium
+                .get("remaining")
+                .and_then(|value| value.as_str()?.parse::<f64>().ok())
+        })
+        .or_else(|| {
+            premium
+                .get("quota_remaining")
+                .and_then(|value| value.as_f64())
+        })?;
+    let reset_in = data
+        .get("quota_reset_date_utc")
+        .and_then(|value| value.as_str())
+        .and_then(format_reset_time_from_iso);
+
+    let mut summary = format!(
+        "{} left this month",
+        format_remaining_count_value(remaining)
+    );
+    if let Some(reset_in) = reset_in {
+        summary.push_str(" · reset ");
+        summary.push_str(&reset_in);
+    }
+
+    Some(CopilotUsageSnapshot {
+        summary: Some(summary),
+    })
+}
+
+fn load_copilot_usage_snapshot() -> Option<CopilotUsageSnapshot> {
+    let data = fetch_copilot_usage_json()?;
+    parse_copilot_usage_snapshot(&data)
+}
+
+fn gemini_quota_summary(data: &serde_json::Value) -> Option<String> {
+    let auth_type = data
+        .get("security")
+        .and_then(|security| security.get("auth"))
+        .and_then(|auth| auth.get("selectedType"))
+        .and_then(|value| value.as_str())?;
+
+    match auth_type {
+        "oauth-personal" => Some("Quota 1000/day · 60/min".into()),
+        "gemini-api-key" | "api-key" => Some("Quota 250/day · 10/min".into()),
+        "workspace-standard" => Some("Quota 1500/day · 120/min".into()),
+        "workspace-enterprise" => Some("Quota 2000/day · 120/min".into()),
+        _ if auth_type.contains("workspace") => Some("Quota via workspace plan".into()),
+        _ if auth_type.contains("vertex") => Some("Quota via Vertex AI".into()),
+        _ => None,
     }
 }
 
@@ -528,25 +1221,9 @@ fn get_kaku_assistant_api_key() -> Option<String> {
     }
 }
 
-fn kaku_assistant_enabled_display(cfg: &KakuAssistantConfig) -> &'static str {
-    if !cfg.is_enabled() {
-        return "Off";
-    }
-    if cfg.api_key().trim().is_empty() {
-        return "Not configured";
-    }
-    "On"
-}
-
 fn extract_kaku_assistant_fields(raw: &str) -> Vec<FieldEntry> {
     let cfg = parse_kaku_assistant_config(raw);
     vec![
-        FieldEntry {
-            key: "Enabled".into(),
-            value: kaku_assistant_enabled_display(&cfg).into(),
-            options: vec!["On".into(), "Off".into()],
-            editable: true,
-        },
         FieldEntry {
             key: "Model".into(),
             value: cfg.model().to_string(),
@@ -995,6 +1672,7 @@ fn extract_claude_code_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
 
 fn extract_codex_fields(raw: &str) -> Vec<FieldEntry> {
     let mut fields = Vec::new();
+    let mut has_model = false;
 
     // Read available models from Codex model cache
     let model_options = read_codex_model_options();
@@ -1010,6 +1688,7 @@ fn extract_codex_fields(raw: &str) -> Vec<FieldEntry> {
             let val = val.trim().trim_matches('"');
             match key {
                 "model" => {
+                    has_model = true;
                     fields.push(FieldEntry {
                         key: "Model".into(),
                         value: val.to_string(),
@@ -1017,17 +1696,25 @@ fn extract_codex_fields(raw: &str) -> Vec<FieldEntry> {
                         ..Default::default()
                     });
                 }
-                "model_reasoning_effort" => {
-                    fields.push(FieldEntry {
-                        key: "Reasoning Effort".into(),
-                        value: val.to_string(),
-                        options: read_codex_reasoning_options(),
-                        ..Default::default()
-                    });
-                }
                 _ => {}
             }
         }
+    }
+
+    if !has_model {
+        let default_model = model_options
+            .first()
+            .map(|model| format!("{model} (default)"))
+            .unwrap_or_else(|| "default".into());
+        fields.insert(
+            0,
+            FieldEntry {
+                key: "Model".into(),
+                value: default_model,
+                options: model_options.clone(),
+                ..Default::default()
+            },
+        );
     }
 
     // Check auth status from auth.json
@@ -1079,55 +1766,6 @@ fn read_codex_model_options() -> Vec<String> {
     }
 
     read_models_dev("openai")
-}
-
-/// Read reasoning effort options from Codex's models cache for the current model.
-fn read_codex_reasoning_options() -> Vec<String> {
-    let config_path = config::HOME_DIR.join(".codex").join("config.toml");
-    let current_model = read_text_with_debug(&config_path, "codex config")
-        .and_then(|raw| {
-            raw.lines()
-                .find(|l| l.trim_start().starts_with("model"))
-                .and_then(|l| l.split_once('='))
-                .map(|(_, v)| v.trim().trim_matches('"').to_string())
-        })
-        .unwrap_or_default();
-
-    let cache_path = config::HOME_DIR.join(".codex").join("models_cache.json");
-    if let Some(parsed) = read_json_file_with_debug(&cache_path, "codex model cache") {
-        if let Some(models) = parsed.get("models").and_then(|m| m.as_array()) {
-            // Find the current model or first visible model
-            let model = models
-                .iter()
-                .find(|m| m.get("slug").and_then(|v| v.as_str()) == Some(&current_model))
-                .or_else(|| {
-                    models
-                        .iter()
-                        .find(|m| m.get("visibility").and_then(|v| v.as_str()) == Some("list"))
-                });
-
-            if let Some(m) = model {
-                if let Some(levels) = m
-                    .get("supported_reasoning_levels")
-                    .and_then(|l| l.as_array())
-                {
-                    let opts: Vec<String> = levels
-                        .iter()
-                        .filter_map(|l| {
-                            l.get("effort")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string())
-                        })
-                        .collect();
-                    if !opts.is_empty() {
-                        return opts;
-                    }
-                }
-            }
-        }
-    }
-
-    vec!["low".into(), "medium".into(), "high".into()]
 }
 
 fn extract_gemini_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
@@ -1547,9 +2185,11 @@ struct App {
     tools: Vec<ToolState>,
     tool_index: usize,
     field_index: usize,
+    assistant_collapsed: bool,
     focus: Focus,
     mode: AppMode,
     status_msg: Option<String>,
+    status_expire: Option<Instant>,
     last_error: Option<String>,
     error_expire: Option<Instant>,
     should_quit: bool,
@@ -1568,19 +2208,30 @@ fn status_value_for_display(field_key: &str, new_val: &str) -> String {
 
 impl App {
     fn new() -> Self {
+        let show_assistant = kaku_assistant_visible();
         let tools: Vec<ToolState> = ALL_TOOLS
             .iter()
             .map(|t| ToolState::load(*t))
-            .filter(|t| t.tool == Tool::KakuAssistant || t.installed)
+            .filter(|t| {
+                (t.tool != Tool::KakuAssistant || show_assistant)
+                    && (matches!(t.tool, Tool::KakuAssistant | Tool::Codex) || t.installed)
+            })
             .collect();
+        let assistant_collapsed = tools
+            .iter()
+            .find(|tool| tool.tool == Tool::KakuAssistant)
+            .map(|tool| should_collapse_kaku_assistant(&tool.fields))
+            .unwrap_or(false);
         let first = tools.iter().position(|t| !t.fields.is_empty()).unwrap_or(0);
         let mut app = App {
             tools,
             tool_index: first,
             field_index: 0,
+            assistant_collapsed,
             focus: Focus::ToolList,
             mode: AppMode::Browsing,
             status_msg: None,
+            status_expire: None,
             last_error: None,
             error_expire: None,
             should_quit: false,
@@ -1589,17 +2240,98 @@ impl App {
         app
     }
 
+    fn tool_row_count(&self, tool_index: usize) -> usize {
+        let Some(tool) = self.tools.get(tool_index) else {
+            return 0;
+        };
+        if tool.tool == Tool::KakuAssistant {
+            return 1 + if self.assistant_collapsed {
+                0
+            } else {
+                tool.fields.len()
+            };
+        }
+        tool.fields.len()
+    }
+
+    fn current_tool(&self) -> &ToolState {
+        &self.tools[self.tool_index]
+    }
+
+    fn tool_is_collapsed(&self, tool_index: usize) -> bool {
+        self.tools
+            .get(tool_index)
+            .is_some_and(|tool| tool.tool == Tool::KakuAssistant && self.assistant_collapsed)
+    }
+
+    fn selected_field_index(&self) -> Option<usize> {
+        let tool = self.current_tool();
+        if tool.fields.is_empty() {
+            return None;
+        }
+
+        if tool.tool == Tool::KakuAssistant {
+            self.field_index.checked_sub(1)
+        } else {
+            Some(self.field_index)
+        }
+    }
+
+    fn display_index_for_field(&self, tool: Tool, field_index: usize) -> usize {
+        if tool == Tool::KakuAssistant {
+            field_index + 1
+        } else {
+            field_index
+        }
+    }
+
+    fn toggle_kaku_assistant_collapsed(&mut self) {
+        if !self
+            .tools
+            .iter()
+            .any(|tool| tool.tool == Tool::KakuAssistant && !tool.fields.is_empty())
+        {
+            return;
+        }
+
+        self.assistant_collapsed = !self.assistant_collapsed;
+        if self.current_tool().tool == Tool::KakuAssistant {
+            self.field_index = 0;
+        }
+        self.set_status(if self.assistant_collapsed {
+            "Kaku Assistant hidden"
+        } else {
+            "Kaku Assistant expanded"
+        });
+    }
+
     fn total_rows(&self) -> usize {
-        self.tools.iter().map(|t| t.fields.len()).sum()
+        (0..self.tools.len())
+            .map(|idx| self.tool_row_count(idx))
+            .sum()
+    }
+
+    fn rendered_tool_row_count(&self) -> usize {
+        self.tools
+            .iter()
+            .map(|tool| {
+                1 + if tool.tool == Tool::KakuAssistant && self.assistant_collapsed {
+                    1
+                } else {
+                    tool.fields.len() + 1
+                }
+            })
+            .sum()
     }
 
     fn flatten_index(&self) -> usize {
         let mut idx = 0;
-        for (ti, tool) in self.tools.iter().enumerate() {
+        for (ti, _) in self.tools.iter().enumerate() {
+            let count = self.tool_row_count(ti);
             if ti == self.tool_index {
-                return idx + self.field_index;
+                return idx + self.field_index.min(count.saturating_sub(1));
             }
-            idx += tool.fields.len();
+            idx += count;
         }
         idx
     }
@@ -1646,9 +2378,22 @@ impl App {
         self.error_expire = Some(Instant::now() + UI_ERROR_TTL);
     }
 
+    fn set_status(&mut self, message: impl Into<String>) {
+        self.status_msg = Some(message.into());
+        self.status_expire = Some(Instant::now() + UI_STATUS_TTL);
+    }
+
     fn sync_transient_errors(&mut self) {
         while let Some(error) = pop_ui_error() {
             self.set_error(error);
+        }
+
+        if self
+            .status_expire
+            .is_some_and(|expire_at| Instant::now() >= expire_at)
+        {
+            self.status_msg = None;
+            self.status_expire = None;
         }
 
         if self
@@ -1662,8 +2407,8 @@ impl App {
 
     fn set_from_flat(&mut self, flat: usize) {
         let mut remaining = flat;
-        for (ti, tool) in self.tools.iter().enumerate() {
-            let count = tool.fields.len();
+        for (ti, _) in self.tools.iter().enumerate() {
+            let count = self.tool_row_count(ti);
             if count == 0 {
                 continue;
             }
@@ -1710,14 +2455,22 @@ impl App {
     }
 
     fn start_edit(&mut self) {
+        if self.current_tool().tool == Tool::KakuAssistant && self.field_index == 0 {
+            self.toggle_kaku_assistant_collapsed();
+            return;
+        }
+
         let tool = &self.tools[self.tool_index];
         if !tool.installed || tool.fields.is_empty() {
             return;
         }
-        if self.field_index >= tool.fields.len() {
+        let Some(selected_field_idx) = self.selected_field_index() else {
+            return;
+        };
+        if selected_field_idx >= tool.fields.len() {
             return;
         }
-        let field = &tool.fields[self.field_index];
+        let field = &tool.fields[selected_field_idx];
 
         // Show OAuth re-authentication command for non-editable auth fields
         if !field.editable {
@@ -1736,7 +2489,7 @@ impl App {
                 if let Some(auth_cmd) = cmd {
                     self.open_in_terminal(auth_cmd);
                 } else {
-                    self.status_msg = Some("OpenClaw uses API keys, check config file".to_string());
+                    self.set_status("OpenClaw uses API keys, check config file");
                 }
             }
             return;
@@ -1744,7 +2497,7 @@ impl App {
 
         if !field.options.is_empty() {
             self.mode = AppMode::Selecting {
-                field_idx: self.field_index,
+                field_idx: selected_field_idx,
                 options: field.options.clone(),
                 selected: field
                     .options
@@ -1766,7 +2519,7 @@ impl App {
         };
         let edit_cursor = edit_buf.len(); // Start cursor at end (always a valid byte boundary)
         self.mode = AppMode::Editing {
-            field_idx: self.field_index,
+            field_idx: selected_field_idx,
             buffer: edit_buf,
             cursor: edit_cursor,
         };
@@ -1794,9 +2547,9 @@ impl App {
             return;
         }
 
-        self.field_index = field_idx;
-        let new_val = options[selected].clone();
         let tool_kind = self.tools[self.tool_index].tool;
+        self.field_index = self.display_index_for_field(tool_kind, field_idx);
+        let new_val = options[selected].clone();
         let field_key = self.tools[self.tool_index].fields[field_idx].key.clone();
         let old_val = self.tools[self.tool_index].fields[field_idx].value.clone();
 
@@ -1807,9 +2560,9 @@ impl App {
         self.tools[self.tool_index].fields[field_idx].value = new_val.clone();
         let status_val = status_value_for_display(&field_key, &new_val);
         match save_field(tool_kind, &field_key, &new_val) {
-            Ok(()) => self.status_msg = Some(format!("Saved {} → {}", field_key, status_val)),
+            Ok(()) => self.set_status(format!("Saved {} → {}", field_key, status_val)),
             Err(e) => {
-                self.status_msg = Some(format!("Save failed: {}", e));
+                self.set_status(format!("Save failed: {}", e));
                 self.set_error(format!("Save failed: {}", e));
             }
         }
@@ -1837,7 +2590,12 @@ impl App {
             return;
         }
 
-        self.field_index = field_idx;
+        let tool_kind = tool.tool;
+        self.field_index = if tool_kind == Tool::KakuAssistant {
+            field_idx + 1
+        } else {
+            field_idx
+        };
         let new_val = buffer.trim().to_string();
         let field_key = tool.fields[field_idx].key.clone();
 
@@ -1855,9 +2613,9 @@ impl App {
 
         let status_val = status_value_for_display(&field_key, &new_val);
         match save_field(tool.tool, &field_key, &new_val) {
-            Ok(()) => self.status_msg = Some(format!("Saved {} → {}", field_key, status_val)),
+            Ok(()) => self.set_status(format!("Saved {} → {}", field_key, status_val)),
             Err(e) => {
-                self.status_msg = Some(format!("Save failed: {}", e));
+                self.set_status(format!("Save failed: {}", e));
                 self.set_error(format!("Save failed: {}", e));
             }
         }
@@ -1867,6 +2625,11 @@ impl App {
     fn reload_current_tool(&mut self) {
         let tool_type = self.tools[self.tool_index].tool;
         self.tools[self.tool_index] = ToolState::load(tool_type);
+        if tool_type == Tool::KakuAssistant {
+            self.assistant_collapsed =
+                should_collapse_kaku_assistant(&self.tools[self.tool_index].fields);
+            self.field_index = 0;
+        }
     }
 
     fn cancel_edit(&mut self) {
@@ -1887,11 +2650,11 @@ impl App {
             Ok(status) if status.success() => {}
             Ok(_) => {
                 log::debug!("open command returned non-zero status");
-                self.status_msg = Some("Failed to open config file".into());
+                self.set_status("Failed to open config file");
             }
             Err(e) => {
                 log::debug!("Failed to open config file: {}", e);
-                self.status_msg = Some(format!("Failed to open: {}", e));
+                self.set_status(format!("Failed to open: {}", e));
             }
         }
     }
@@ -1905,19 +2668,35 @@ impl App {
         if let Err(e) = std::fs::remove_file(&cache_path) {
             log::trace!("Could not remove models cache: {}", e);
         }
+        let codex_usage_cache = codex_usage_cache_path();
+        if let Err(e) = std::fs::remove_file(&codex_usage_cache) {
+            log::trace!("Could not remove codex usage cache: {}", e);
+        }
+        let claude_usage_cache = claude_usage_cache_path();
+        if let Err(e) = std::fs::remove_file(&claude_usage_cache) {
+            log::trace!("Could not remove claude usage cache: {}", e);
+        }
+        let copilot_usage_cache = copilot_usage_cache_path();
+        if let Err(e) = std::fs::remove_file(&copilot_usage_cache) {
+            log::trace!("Could not remove copilot usage cache: {}", e);
+        }
 
         match fetch_models_dev_json() {
             Some(_) => {
+                let show_assistant = kaku_assistant_visible();
                 self.tools = ALL_TOOLS
                     .iter()
                     .map(|t| ToolState::load(*t))
-                    .filter(|t| t.tool == Tool::KakuAssistant || t.installed)
+                    .filter(|t| {
+                        (t.tool != Tool::KakuAssistant || show_assistant)
+                            && (matches!(t.tool, Tool::KakuAssistant | Tool::Codex) || t.installed)
+                    })
                     .collect();
-                self.status_msg = Some("Models refreshed".into());
+                self.set_status("AI settings refreshed");
                 self.sync_transient_errors();
             }
             None => {
-                self.status_msg = Some("Refresh failed (network error)".into());
+                self.set_status("Refresh failed (network error)");
                 self.set_error("Models refresh failed. Check network or proxy.");
             }
         }
@@ -1937,7 +2716,7 @@ impl App {
             .stderr(std::process::Stdio::null())
             .status();
         if kaku_status.as_ref().is_ok_and(|status| status.success()) {
-            self.status_msg = Some("Opening in new Kaku tab...".into());
+            self.set_status("Opening in new Kaku tab...");
             return;
         }
 
@@ -1948,10 +2727,8 @@ impl App {
             .arg(&script)
             .spawn()
         {
-            Ok(_) => self.status_msg = Some("Opening in new terminal window...".into()),
-            Err(_) => {
-                self.status_msg = Some(format!("Failed to open terminal. Run '{}' manually", cmd))
-            }
+            Ok(_) => self.set_status("Opening in new terminal window..."),
+            Err(_) => self.set_status(format!("Failed to open terminal. Run '{}' manually", cmd)),
         }
     }
 }
@@ -2245,19 +3022,27 @@ fn save_codex_field_at(path: &Path, field_key: &str, new_val: &str) -> anyhow::R
 
 pub fn run() -> anyhow::Result<()> {
     enable_raw_mode().context("enable raw mode")?;
-    crossterm::execute!(io::stdout(), EnableBracketedPaste).context("enable bracketed paste")?;
-    let stdout = io::stdout();
+    let mut stdout = io::stdout();
+    crossterm::execute!(stdout, EnableBracketedPaste).context("enable bracketed paste")?;
+    stdout
+        .execute(EnterAlternateScreen)
+        .context("enter alternate screen")?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("create terminal")?;
+    terminal
+        .draw(ui::loading_ui)
+        .context("draw loading screen")?;
 
     let mut app = App::new();
     let result = run_loop(&mut terminal, &mut app);
 
-    let _ = crossterm::execute!(io::stdout(), DisableBracketedPaste);
     disable_raw_mode().context("disable raw mode")?;
+    let _ = terminal.backend_mut().execute(DisableBracketedPaste);
+    terminal
+        .backend_mut()
+        .execute(LeaveAlternateScreen)
+        .context("leave alternate screen")?;
     terminal.show_cursor().context("show cursor")?;
-    // Emit a trailing newline so zsh does not show a partial-line `%` indicator.
-    println!();
 
     result
 }
@@ -2270,9 +3055,14 @@ fn run_loop(
         app.sync_transient_errors();
         terminal.draw(|frame| ui::ui(frame, app))?;
 
+        if !event::poll(EVENT_POLL_INTERVAL).context("poll event")? {
+            continue;
+        }
+
         match event::read().context("read event")? {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 app.status_msg = None;
+                app.status_expire = None;
                 if app.is_selecting() {
                     match key.code {
                         KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
@@ -2616,22 +3406,174 @@ mod tests {
     }
 
     #[test]
-    fn kaku_assistant_enabled_shows_not_configured_without_api_key() {
+    fn kaku_assistant_fields_do_not_include_enabled_toggle() {
         let fields = extract_kaku_assistant_fields("enabled = true\n");
-        let enabled = fields
-            .iter()
-            .find(|f| f.key == "Enabled")
-            .expect("enabled field");
-        assert_eq!(enabled.value, "Not configured");
+        assert!(fields.iter().all(|field| field.key != "Enabled"));
     }
 
     #[test]
-    fn kaku_assistant_enabled_shows_off_when_disabled() {
+    fn summarize_kaku_assistant_requires_api_key() {
         let fields = extract_kaku_assistant_fields("enabled = false\n");
-        let enabled = fields
+        assert_eq!(
+            summarize_tool_fields(Tool::KakuAssistant, true, &fields, None),
+            Some(format!(
+                "Setup required · {}",
+                assistant_config::DEFAULT_MODEL
+            ))
+        );
+    }
+
+    #[test]
+    fn summarize_kaku_assistant_prefers_status_and_model() {
+        let fields = extract_kaku_assistant_fields(
+            "enabled = true\napi_key = \"sk-test\"\nmodel = \"gpt-5-mini\"\n",
+        );
+        assert_eq!(
+            summarize_tool_fields(Tool::KakuAssistant, true, &fields, None),
+            Some("Ready · gpt-5-mini".into())
+        );
+    }
+
+    #[test]
+    fn summarize_non_usage_tool_uses_auth_and_model() {
+        let fields = vec![
+            FieldEntry {
+                key: "Model".into(),
+                value: "gpt-5 (default)".into(),
+                options: vec![],
+                editable: true,
+            },
+            FieldEntry {
+                key: "Auth".into(),
+                value: "✓ user@example.com".into(),
+                options: vec![],
+                editable: false,
+            },
+        ];
+
+        assert_eq!(
+            summarize_tool_fields(Tool::FactoryDroid, true, &fields, None),
+            Some("user@example.com · gpt-5".into())
+        );
+    }
+
+    #[test]
+    fn summarize_codex_prefers_usage_only() {
+        assert_eq!(
+            summarize_tool_fields(
+                Tool::Codex,
+                true,
+                &[FieldEntry {
+                    key: "Auth".into(),
+                    value: "✓ user@example.com".into(),
+                    options: vec![],
+                    editable: false,
+                }],
+                Some("5h remain 75% · reset 4h0m  |  7d remain 93% · reset 6d0h"),
+            ),
+            Some("5h remain 75% · reset 4h0m  |  7d remain 93% · reset 6d0h".into())
+        );
+    }
+
+    #[test]
+    fn summarize_claude_prefers_usage_only() {
+        assert_eq!(
+            summarize_tool_fields(
+                Tool::ClaudeCode,
+                true,
+                &[],
+                Some("5h remain 94% · reset 2h0m")
+            ),
+            Some("5h remain 94% · reset 2h0m".into())
+        );
+    }
+
+    #[test]
+    fn claude_usage_snapshot_shows_reauth_required_for_invalid_refresh_state() {
+        let parsed = serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "authentication_error",
+                "details": {
+                    "error_code": "token_expired"
+                }
+            }
+        });
+
+        let snapshot = parse_claude_usage_snapshot(&parsed).expect("snapshot");
+        assert_eq!(snapshot.summary, Some("Re-auth required".into()));
+    }
+
+    #[test]
+    fn gemini_quota_summary_uses_auth_type() {
+        let parsed = serde_json::json!({
+            "security": {
+                "auth": {
+                    "selectedType": "oauth-personal"
+                }
+            }
+        });
+        assert_eq!(
+            gemini_quota_summary(&parsed),
+            Some("Quota 1000/day · 60/min".into())
+        );
+    }
+
+    #[test]
+    fn copilot_usage_snapshot_prefers_remaining_count() {
+        let parsed = serde_json::json!({
+            "quota_reset_date_utc": "2100-04-01T00:00:00.000Z",
+            "quota_snapshots": {
+                "premium_interactions": {
+                    "remaining": 298,
+                    "quota_remaining": 298.34
+                }
+            }
+        });
+        let snapshot = parse_copilot_usage_snapshot(&parsed).expect("snapshot");
+        let summary = snapshot.summary.expect("summary");
+        assert!(summary.starts_with("298 left this month · reset "));
+    }
+
+    #[test]
+    fn codex_extract_adds_default_model_when_missing() {
+        let fields = extract_codex_fields("");
+        let model = fields
             .iter()
-            .find(|f| f.key == "Enabled")
-            .expect("enabled field");
-        assert_eq!(enabled.value, "Off");
+            .find(|field| field.key == "Model")
+            .expect("model field");
+        assert!(model.value == "default" || model.value.ends_with(" (default)"));
+    }
+
+    #[test]
+    fn kaku_assistant_collapses_only_when_ready() {
+        let ready = extract_kaku_assistant_fields(
+            "enabled = true\napi_key = \"sk-test\"\nmodel = \"gpt-5-mini\"\n",
+        );
+        assert!(should_collapse_kaku_assistant(&ready));
+
+        let not_ready = extract_kaku_assistant_fields("enabled = true\n");
+        assert!(!should_collapse_kaku_assistant(&not_ready));
+    }
+
+    #[test]
+    fn codex_usage_snapshot_prefers_current_window() {
+        let parsed = serde_json::json!({
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 62.7,
+                    "reset_at": 4_102_444_800i64
+                },
+                "secondary_window": {
+                    "used_percent": 18.0,
+                    "reset_at": 4_102_704_000i64
+                }
+            }
+        });
+
+        let snapshot = parse_codex_usage_snapshot(&parsed).expect("snapshot");
+        let summary = snapshot.summary.expect("summary");
+        assert!(summary.starts_with("5h remain 37.3% · reset "));
+        assert!(summary.contains("  |  7d remain 82% · reset "));
     }
 }

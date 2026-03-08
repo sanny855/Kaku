@@ -53,7 +53,7 @@ Kaku comes with intuitive macOS-native shortcuts:
 | Reopen Closed Tab | `Cmd + Shift + T` |
 | Clear Screen | `Cmd + K` |
 | Doctor Panel | `Ctrl + Shift + L` |
-| Kaku AI Settings | `Cmd + Shift + A` |
+| AI Panel | `Cmd + Shift + A` |
 | Kaku Assistant Apply Suggestion | `Cmd + Shift + E` |
 | Open Lazygit | `Cmd + Shift + G` |
 | Yazi File Manager | `Cmd + Shift + Y` or `y` |
@@ -93,7 +93,7 @@ Optional CLI tools installed via Homebrew during `kaku init`:
 
 Kaku uses `~/.config/kaku/kaku.lua` for configuration, fully compatible with WezTerm's Lua API, with built-in defaults at `Kaku.app/Contents/Resources/kaku.lua` as fallback.
 
-Run `kaku config` or press `Cmd + ,` to open the Settings TUI and edit common options (font, theme, opacity, bells) without manually editing Lua.
+Run `kaku config` or press `Cmd + ,` to open the Settings TUI and edit common options (font, theme, opacity, bells, Kaku Assistant) without manually editing config files.
 
 You can also remap true-color output from specific apps to keep theme consistency:
 
@@ -107,12 +107,12 @@ Run `kaku` in your terminal to see all available commands such as `kaku ai`, `ka
 
 ## Kaku AI
 
-Kaku includes a built-in assistant for command-line error recovery and a unified settings UI for external AI coding tools.
+Kaku includes a built-in assistant for command-line error recovery and a single AI settings page for coding tools.
 
-- **Kaku Assistant**: Automatically analyzes failed commands and prepares a safe command suggestion.
+- **Kaku Assistant**: Automatically analyzes failed commands and prepares a safe command suggestion. Enable or disable it from `kaku config`.
 - **AI Tools Config**: Manage settings for tools like Claude Code, Codex, Gemini CLI, Copilot CLI, Factory Droid, and OpenClaw.
 
-Open AI settings with `kaku ai`, then configure **Kaku Assistant** (enable, model, base URL, API key) and your external AI tools in one place.
+Open AI settings with `kaku ai` to configure your external AI tools and edit **Kaku Assistant** details after it is enabled.
 For enterprise gateway/proxy headers, edit `~/.config/kaku/assistant.toml` and set `custom_headers` there.
 
 Tip: DeepSeek-V3.2 is a great low-cost option to start with for everyday AI coding tasks.

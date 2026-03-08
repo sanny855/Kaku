@@ -50,6 +50,7 @@ fn render_fields(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let mut items: Vec<ListItem> = Vec::new();
     let mut selected_flat: Option<usize> = None;
     let mut flat = 0usize;
+    let key_width = 24usize;
 
     for (idx, field) in app.fields.iter().enumerate() {
         let is_selected = idx == app.selected;
@@ -93,7 +94,10 @@ fn render_fields(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                         Modifier::empty()
                     }),
             ),
-            Span::styled(format!("{:<20}", field.key), key_style),
+            Span::styled(
+                format!("{:<width$}", field.key, width = key_width),
+                key_style,
+            ),
             Span::styled(format!("{}{}", display_value, suffix), value_style),
         ]);
 

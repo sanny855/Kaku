@@ -1,5 +1,6 @@
 mod ui;
 
+use crate::assistant_config;
 use anyhow::Context;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
@@ -228,6 +229,14 @@ impl App {
                 skip_write: false,
             },
             ConfigField {
+                key: "Kaku Assistant",
+                lua_key: "__assistant_enabled__",
+                value: String::new(),
+                default: "On".into(),
+                options: vec!["On", "Off"],
+                skip_write: false,
+            },
+            ConfigField {
                 key: "Tab Bar Position",
                 lua_key: "tab_bar_at_bottom",
                 value: String::new(),
@@ -283,6 +292,18 @@ impl App {
     }
 
     fn load_config(&mut self) {
+        if let Some(field) = self
+            .fields
+            .iter_mut()
+            .find(|field| field.lua_key == "__assistant_enabled__")
+        {
+            field.value = match assistant_config::read_enabled() {
+                Ok(true) => "On".into(),
+                Ok(false) => "Off".into(),
+                Err(_) => field.default.clone(),
+            };
+        }
+
         let config_path = self.config_path();
         if !config_path.exists() {
             return;
@@ -725,8 +746,17 @@ impl App {
 
         let config_path = self.config_path();
         let mut content = std::fs::read_to_string(&config_path).unwrap_or_default();
+        let assistant_enabled = self
+            .fields
+            .iter()
+            .find(|field| field.lua_key == "__assistant_enabled__")
+            .map(|field| self.display_value(field) == "On");
 
         for field in &self.fields {
+            if field.lua_key == "__assistant_enabled__" {
+                continue;
+            }
+
             // Never touch lines we couldn't fully parse — preserve user's original.
             if field.skip_write {
                 continue;
@@ -764,6 +794,10 @@ impl App {
             }
         }
         std::fs::rename(&temp_path, &real_path)?;
+
+        if let Some(enabled) = assistant_enabled {
+            assistant_config::write_enabled(enabled)?;
+        }
 
         Ok(())
     }

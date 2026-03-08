@@ -3,8 +3,22 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
-use super::App;
+use super::{App, Tool};
 use crate::tui_core::theme::{accent, bg, muted, panel, primary, red, success, text_fg};
+
+pub(super) fn loading_ui(frame: &mut ratatui::Frame) {
+    let full = frame.area();
+    if full.width < 2 || full.height < 2 {
+        return;
+    }
+    let area = Rect::new(full.x, full.y, full.width - 1, full.height - 1);
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(Block::default().style(Style::default().bg(bg())), area);
+
+    let chunks = Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).split(area);
+    render_header(frame, chunks[0], Some("Loading..."));
+}
 
 pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
     let full = frame.area();
@@ -20,17 +34,28 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
     frame.render_widget(Clear, area);
     frame.render_widget(Block::default().style(Style::default().bg(bg())), area);
 
-    let chunks = Layout::vertical([
-        Constraint::Length(2), // logo header
-        Constraint::Fill(1),   // tool list
-        Constraint::Length(1), // empty spacer
-        Constraint::Length(1), // status bar
-    ])
-    .split(area);
+    let remaining_height = area.height.saturating_sub(2);
+    let rendered_tool_rows = app.rendered_tool_row_count() as u16;
+    let chunks = if rendered_tool_rows + 1 <= remaining_height {
+        Layout::vertical([
+            Constraint::Length(2),                  // logo header
+            Constraint::Length(rendered_tool_rows), // tool list
+            Constraint::Length(1),                  // status bar
+            Constraint::Fill(1),                    // trailing empty space
+        ])
+        .split(area)
+    } else {
+        Layout::vertical([
+            Constraint::Length(2), // logo header
+            Constraint::Fill(1),   // tool list
+            Constraint::Length(1), // status bar
+        ])
+        .split(area)
+    };
 
-    render_header(frame, chunks[0]);
+    render_header(frame, chunks[0], None);
     render_tools(frame, chunks[1], app);
-    render_status_bar(frame, chunks[3], app);
+    render_status_bar(frame, chunks[2], app);
 
     if app.is_selecting() {
         render_selector(frame, area, app);
@@ -39,15 +64,20 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
     }
 }
 
-fn render_header(frame: &mut ratatui::Frame, area: Rect) {
-    let line = Line::from(vec![
+fn render_header(frame: &mut ratatui::Frame, area: Rect, status: Option<&str>) {
+    let mut spans = vec![
         Span::styled(
             "  Kaku",
             Style::default().fg(primary()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" · ", Style::default().fg(muted())),
-        Span::styled("AI Settings", Style::default().fg(text_fg())),
-    ]);
+        Span::styled("AI", Style::default().fg(text_fg())),
+    ];
+    if let Some(status) = status {
+        spans.push(Span::styled("  ", Style::default()));
+        spans.push(Span::styled(status, Style::default().fg(muted())));
+    }
+    let line = Line::from(spans);
     frame.render_widget(Paragraph::new(vec![line, Line::from("")]), area);
 }
 
@@ -58,11 +88,12 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
     for (ti, tool) in app.tools.iter().enumerate() {
         let is_current_tool = ti == app.tool_index;
-        let path_str = tool.tool.config_path().display().to_string();
-        let home = config::HOME_DIR.display().to_string();
-        let short_path = path_str.replace(&home, "~");
+        let is_collapsed = app.tool_is_collapsed(ti);
+        let header_selected =
+            is_current_tool && tool.tool == Tool::KakuAssistant && app.field_index == 0;
 
-        let tool_style = if is_current_tool {
+        let tool_style = if header_selected || (is_current_tool && tool.tool != Tool::KakuAssistant)
+        {
             Style::default().fg(primary()).add_modifier(Modifier::BOLD)
         } else if tool.installed {
             Style::default().fg(success()).add_modifier(Modifier::BOLD)
@@ -70,28 +101,53 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             Style::default().fg(muted())
         };
 
-        let header = Line::from(vec![
+        let mut header = Line::from(vec![
             Span::styled(
-                if is_current_tool { "➤ " } else { "  " },
+                if header_selected || (is_current_tool && tool.tool != Tool::KakuAssistant) {
+                    "➤ "
+                } else {
+                    "  "
+                },
                 Style::default().fg(primary()).add_modifier(Modifier::BOLD),
             ),
             Span::styled(tool.tool.label(), tool_style),
-            Span::styled("  ", Style::default()),
-            Span::styled(
-                short_path,
-                Style::default().fg(if is_current_tool { text_fg() } else { muted() }),
-            ),
-            if !tool.installed {
-                Span::styled("  (not installed)", Style::default().fg(muted()))
-            } else {
-                Span::raw("")
-            },
         ]);
+        if tool.tool == Tool::KakuAssistant {
+            header.spans.push(Span::styled(
+                if is_collapsed { " ▸" } else { " ▾" },
+                Style::default().fg(if is_current_tool { primary() } else { muted() }),
+            ));
+        }
+        if let Some(summary) = &tool.summary {
+            header.spans.push(Span::styled("  ", Style::default()));
+            header
+                .spans
+                .push(Span::styled(summary, Style::default().fg(text_fg())));
+        } else if !tool.installed {
+            header.spans.push(Span::styled(
+                "  not installed",
+                Style::default().fg(muted()),
+            ));
+        }
         items.push(ListItem::new(header));
+        if header_selected {
+            selected_flat = Some(flat);
+        }
         flat += 1;
 
+        if is_collapsed {
+            items.push(ListItem::new(Line::raw("")));
+            flat += 1;
+            continue;
+        }
+
         for (fi, field) in tool.fields.iter().enumerate() {
-            let is_selected = is_current_tool && fi == app.field_index;
+            let display_index = if tool.tool == Tool::KakuAssistant {
+                fi + 1
+            } else {
+                fi
+            };
+            let is_selected = is_current_tool && display_index == app.field_index;
             if is_selected {
                 selected_flat = Some(flat);
             }
@@ -218,28 +274,16 @@ fn render_status_bar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             Span::styled("Edit", Style::default().fg(muted())),
             Span::styled(" | ", Style::default().fg(muted())),
             Span::styled(
-                " Esc ",
+                " Esc/Q ",
                 Style::default().fg(primary()).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Cancel", Style::default().fg(muted())),
-            Span::styled(" | ", Style::default().fg(muted())),
-            Span::styled(
-                " O ",
-                Style::default().fg(primary()).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Open", Style::default().fg(muted())),
+            Span::styled("Back", Style::default().fg(muted())),
             Span::styled(" | ", Style::default().fg(muted())),
             Span::styled(
                 " R ",
                 Style::default().fg(primary()).add_modifier(Modifier::BOLD),
             ),
             Span::styled("Refresh", Style::default().fg(muted())),
-            Span::styled(" | ", Style::default().fg(muted())),
-            Span::styled(
-                " Q ",
-                Style::default().fg(primary()).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Quit", Style::default().fg(muted())),
         ])
     };
 
