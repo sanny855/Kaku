@@ -22,7 +22,8 @@ read_bundled_config_version() {
 
 print_config_update_highlights() {
 	local script_dir="$1"
-	local target_version="$2"
+	local from_version="$2"
+	local target_version="$3"
 	local highlights_file="$script_dir/config_update_highlights.tsv"
 	local found=1
 
@@ -35,7 +36,7 @@ print_config_update_highlights() {
 			continue
 		fi
 
-		if [[ "$version" == "$target_version" ]]; then
+		if [[ "$version" =~ ^[0-9]+$ ]] && (( version >= from_version && version <= target_version )); then
 			printf '  • %s\n' "$highlight"
 			found=0
 		fi

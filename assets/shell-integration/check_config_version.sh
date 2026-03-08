@@ -63,8 +63,8 @@ fi
 echo -e "${BOLD}Kaku config update available!${NC} v$user_version -> v$CURRENT_CONFIG_VERSION"
 echo ""
 
-echo -e "${BOLD}What's new:${NC}"
-if ! print_config_update_highlights "$SCRIPT_DIR" "$CURRENT_CONFIG_VERSION"; then
+echo -e "${BOLD}What's new in V$user_version to V$CURRENT_CONFIG_VERSION:${NC}"
+if ! print_config_update_highlights "$SCRIPT_DIR" "$user_version" "$CURRENT_CONFIG_VERSION"; then
 	echo "  • Shell integration and reliability improvements"
 	echo "  • See project release notes for full details"
 fi

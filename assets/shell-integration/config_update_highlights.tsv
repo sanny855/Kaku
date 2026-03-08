@@ -3,14 +3,11 @@
 11	Type y to launch Yazi, cd+Tab falls back to zsh-z history
 11	Plugins already loaded by your config are no longer duplicated
 11	Fixed: delete key after Chinese IME, terminal type for sudo+nano
-12	Shell text editing: Cmd+A select all, Shift+Arrow selection, ESC to cancel
-12	AI error fixer: auto-suggests fixes on failure, Cmd+Shift+E to apply
-12	Type y to launch Yazi, cd+Tab falls back to zsh-z history
-12	Plugins already loaded by your config are no longer duplicated
-12	Fixed: delete key after Chinese IME, terminal type for sudo+nano
-12	Fixed: yazi alias conflict with existing shell aliases
-12	Fixed: SSH sessions now use xterm-256color for better remote compatibility
-13	Fixed: Starship right prompt no longer leaks literal text after Ctrl-C
-13	Fixed: AI shell hooks now work reliably when TERM falls back to xterm-256color
-13	Refreshed Kaku shell integration source line and generated init script
-14	Fixed: config update now regenerates a valid Starship RPROMPT helper in zsh
+11	Improved shell integration defaults for daily terminal editing
+12	Shell text editing now supports Cmd+A, Shift+Arrow selection, and ESC cancel
+12	AI error fixer can suggest and apply fixes directly in the terminal
+12	Yazi launcher and cd+Tab fallback are now built into the default shell workflow
+12	Shell integration compatibility is improved for SSH, Delete key behavior, and existing plugins
+13	Starship prompt and AI shell hooks are more reliable in zsh and xterm-256color environments
+13	First-run setup and managed shell integration refresh are more stable across environments
+14	Fixed an early 0.6.0 zsh prompt helper issue and now regenerate the managed script correctly
