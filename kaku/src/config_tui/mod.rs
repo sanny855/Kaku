@@ -1,6 +1,7 @@
 mod ui;
 
 use crate::assistant_config;
+use crate::utils::open_path_in_editor;
 use anyhow::Context;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
@@ -11,7 +12,6 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
 pub fn run() -> anyhow::Result<()> {
     enable_raw_mode().context("enable raw mode")?;
@@ -1032,61 +1032,7 @@ impl App {
 
 fn open_config_in_editor() -> anyhow::Result<()> {
     let config_path = config::user_config_path();
-
-    // Try VSCode first
-    const VSCODE_CANDIDATES: &[&str] = &[
-        "code",
-        "/usr/local/bin/code",
-        "/opt/homebrew/bin/code",
-        "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
-    ];
-
-    for candidate in VSCODE_CANDIDATES {
-        let result = Command::new(candidate)
-            .arg("-g")
-            .arg(&config_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        match result {
-            Ok(status) if status.success() => return Ok(()),
-            Ok(_) => break,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => break,
-        }
-    }
-
-    // Try default app via `open`
-    #[cfg(target_os = "macos")]
-    {
-        let status = Command::new("open")
-            .arg("-t")
-            .arg(&config_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        if let Ok(s) = status {
-            if s.success() {
-                return Ok(());
-            }
-        }
-
-        // Fall back to revealing in Finder
-        Command::new("open")
-            .arg("-R")
-            .arg(&config_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .ok();
-    }
-
-    Ok(())
+    open_path_in_editor(&config_path)
 }
 
 /// Send an OSC 1337 SetUserVar to signal kaku-gui that config has changed.

@@ -1,5 +1,5 @@
 use crate::assistant_config;
-use crate::utils::{is_jsonc_path, parse_json_or_jsonc, write_atomic};
+use crate::utils::{is_jsonc_path, open_path_in_editor, parse_json_or_jsonc, write_atomic};
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use crossterm::event::{
@@ -3263,28 +3263,10 @@ impl App {
         self.focus = Focus::ToolList;
     }
 
-    fn open_config(&mut self) {
-        let Some(tool) = self.current_tool() else {
-            return;
-        };
+    fn config_path_to_open(&self) -> Option<PathBuf> {
+        let tool = self.current_tool()?;
         let path = tool.tool.config_path();
-        if !path.exists() {
-            return;
-        }
-        match std::process::Command::new("/usr/bin/open")
-            .arg(&path)
-            .status()
-        {
-            Ok(status) if status.success() => {}
-            Ok(_) => {
-                log::debug!("open command returned non-zero status");
-                self.set_status("Failed to open config file");
-            }
-            Err(e) => {
-                log::debug!("Failed to open config file: {}", e);
-                self.set_status(format!("Failed to open: {}", e));
-            }
-        }
+        path.exists().then_some(path)
     }
 
     fn refresh_models(&mut self) {
@@ -3878,7 +3860,17 @@ fn run_loop(
                     KeyCode::Up | KeyCode::Char('k') => app.move_up(),
                     KeyCode::Down | KeyCode::Char('j') => app.move_down(),
                     KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => app.start_edit(),
-                    KeyCode::Char('o') => app.open_config(),
+                    KeyCode::Char('o') => {
+                        if let Some(path) = app.config_path_to_open() {
+                            match with_terminal_suspended(terminal, || open_path_in_editor(&path)) {
+                                Ok(()) => app.set_status("Opened config file"),
+                                Err(err) => {
+                                    log::debug!("Failed to open config file: {}", err);
+                                    app.set_status(format!("Failed to open: {}", err));
+                                }
+                            }
+                        }
+                    }
                     KeyCode::Char('r') => app.refresh_models(),
                     _ => {}
                 }
@@ -3918,6 +3910,36 @@ fn run_loop(
             return Ok(());
         }
     }
+}
+
+fn with_terminal_suspended<F>(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    func: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce() -> anyhow::Result<()>,
+{
+    disable_raw_mode().context("disable raw mode")?;
+    let mut stdout = io::stdout();
+    crossterm::execute!(stdout, DisableBracketedPaste).context("disable bracketed paste")?;
+    stdout
+        .execute(LeaveAlternateScreen)
+        .context("leave alternate screen")?;
+
+    let action_result = func();
+
+    let restore_result = (|| -> anyhow::Result<()> {
+        enable_raw_mode().context("enable raw mode")?;
+        let mut stdout = io::stdout();
+        crossterm::execute!(stdout, EnableBracketedPaste).context("enable bracketed paste")?;
+        stdout
+            .execute(EnterAlternateScreen)
+            .context("enter alternate screen")?;
+        terminal.clear().context("clear terminal")?;
+        Ok(())
+    })();
+
+    action_result.and(restore_result)
 }
 
 fn prev_char_boundary(buf: &str, cursor: usize) -> usize {
