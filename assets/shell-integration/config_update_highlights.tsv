@@ -10,3 +10,6 @@
 12	Fixed: delete key after Chinese IME, terminal type for sudo+nano
 12	Fixed: yazi alias conflict with existing shell aliases
 12	Fixed: SSH sessions now use xterm-256color for better remote compatibility
+13	Fixed: Starship right prompt no longer leaks literal text after Ctrl-C
+13	Fixed: AI shell hooks now work reliably when TERM falls back to xterm-256color
+13	Refreshed Kaku shell integration source line and generated init script
