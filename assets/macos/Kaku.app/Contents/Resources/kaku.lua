@@ -1657,11 +1657,11 @@ local function resolve_yazi_command()
     end
   end
 
-  local candidates = {
-    "yazi",
-    "/opt/homebrew/bin/yazi",
-    "/usr/local/bin/yazi",
-  }
+  local home = os.getenv("HOME") or ""
+  local candidates = { "yazi", "/opt/homebrew/bin/yazi", "/usr/local/bin/yazi" }
+  if home ~= "" then
+    table.insert(candidates, 1, home .. "/.config/kaku/zsh/bin/yazi")
+  end
   local resolved = nil
   for _, cmd in ipairs(candidates) do
     local call_ok, run_result = pcall(function()
@@ -1677,6 +1677,112 @@ local function resolve_yazi_command()
   yazi_command_probe.command = resolved
   yazi_command_probe.checked_at = now
   return resolved
+end
+
+local kaku_yazi_theme_marker_start = "# ===== Kaku Yazi Flavor (managed) ====="
+local kaku_yazi_theme_marker_end = "# ===== End Kaku Yazi Flavor (managed) ====="
+
+local function current_yazi_flavor(window)
+  local overrides = window and window:get_config_overrides() or {}
+  local scheme = overrides.color_scheme or config.color_scheme or 'Kaku Dark'
+  return scheme == 'Kaku Light' and 'kaku-light' or 'kaku-dark'
+end
+
+local function strip_managed_yazi_theme_block(content)
+  local lines = {}
+  local skipping = false
+
+  for line in (content .. "\n"):gmatch("(.-)\n") do
+    if line == kaku_yazi_theme_marker_start then
+      skipping = true
+    elseif line == kaku_yazi_theme_marker_end then
+      skipping = false
+    elseif not skipping then
+      table.insert(lines, line)
+    end
+  end
+
+  return table.concat(lines, "\n")
+end
+
+local function build_managed_yazi_theme_block(flavor)
+  return table.concat({
+    kaku_yazi_theme_marker_start,
+    "[flavor]",
+    string.format('dark = "%s"', flavor),
+    string.format('light = "%s"', flavor),
+    kaku_yazi_theme_marker_end,
+  }, "\n")
+end
+
+local function is_legacy_kaku_yazi_theme(content)
+  if content:find("# Kaku%-aligned theme for Yazi 26%.x", 1) then
+    return true
+  end
+
+  local normalized = content
+      :gsub("[ \t]+\n", "\n")
+      :gsub("^%s+", "")
+      :gsub("%s+$", "")
+      :gsub("\n+", "\n")
+
+  return normalized == table.concat({
+    "[mgr]",
+    'border_symbol = "│"',
+    'border_style = { fg = "#555555" }',
+    "[indicator]",
+    'padding = { open = "", close = "" }',
+  }, "\n")
+end
+
+local function sync_managed_yazi_theme(window)
+  local home = os.getenv("HOME")
+  if not home or home == "" then
+    return
+  end
+
+  local yazi_dir = home .. "/.config/yazi"
+  local theme_path = yazi_dir .. "/theme.toml"
+  local flavor = current_yazi_flavor(window)
+  local managed_block = build_managed_yazi_theme_block(flavor)
+
+  os.execute(string.format("mkdir -p %q", yazi_dir))
+
+  local existing = ""
+  local theme_file = io.open(theme_path, "r")
+  if theme_file then
+    existing = theme_file:read("*all") or ""
+    theme_file:close()
+  end
+
+  if not is_legacy_kaku_yazi_theme(existing) and existing:find(managed_block, 1, true) then
+    return
+  end
+
+  local updated
+  if existing == "" or is_legacy_kaku_yazi_theme(existing) then
+    updated = table.concat({
+      '"$schema" = "https://yazi-rs.github.io/schemas/theme.json"',
+      "",
+      "# Kaku manages the [flavor] section below so Yazi matches the current Kaku theme.",
+      managed_block,
+      "",
+    }, "\n")
+  else
+    local has_user_flavor = ("\n" .. existing .. "\n"):find("\n%s*%[flavor%]%s*\n") ~= nil
+    local has_managed = existing:find(kaku_yazi_theme_marker_start, 1, true) ~= nil
+    if has_user_flavor and not has_managed then
+      return
+    end
+
+    updated = strip_managed_yazi_theme_block(existing)
+    if updated ~= "" and not updated:match("\n$") then
+      updated = updated .. "\n"
+    end
+    updated = updated .. "\n" .. managed_block .. "\n"
+  end
+
+  write_text_file(theme_path, updated)
 end
 
 local function resolve_sshfs_command()
@@ -2314,6 +2420,8 @@ local function launch_yazi(window, pane)
     show_yazi_toast(window, pane, "kaku-toast-yazi-no-pane")
     return
   end
+
+  sync_managed_yazi_theme(window)
 
   local yazi_cmd = resolve_yazi_command()
   if not yazi_cmd then

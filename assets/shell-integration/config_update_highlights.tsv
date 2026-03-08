@@ -11,3 +11,4 @@
 13	Starship prompt and AI shell hooks are more reliable in zsh and xterm-256color environments
 13	First-run setup and managed shell integration refresh are more stable across environments
 14	Fixed an early 0.6.0 zsh prompt helper issue and now regenerate the managed script correctly
+15	Yazi now follows Kaku dark and light themes automatically, with corrected folder and file colors in both modes

@@ -74,15 +74,237 @@ YAZI_CONFIG_DIR="$HOME/.config/yazi"
 YAZI_CONFIG_FILE="$YAZI_CONFIG_DIR/yazi.toml"
 YAZI_KEYMAP_FILE="$YAZI_CONFIG_DIR/keymap.toml"
 YAZI_THEME_FILE="$YAZI_CONFIG_DIR/theme.toml"
+YAZI_FLAVORS_DIR="$YAZI_CONFIG_DIR/flavors"
+YAZI_WRAPPER_FILE="$USER_CONFIG_DIR/bin/yazi"
+KAKU_YAZI_THEME_MARKER_START="# ===== Kaku Yazi Flavor (managed) ====="
+KAKU_YAZI_THEME_MARKER_END="# ===== End Kaku Yazi Flavor (managed) ====="
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 BACKUP_SUFFIX=".kaku-backup-$(date +%s)"
 ZSHRC_BACKED_UP=0
+
+if [[ -d "$SCRIPT_DIR/yazi-flavors" ]]; then
+	KAKU_YAZI_FLAVOR_SOURCE_DIR="$SCRIPT_DIR/yazi-flavors"
+else
+	KAKU_YAZI_FLAVOR_SOURCE_DIR="$RESOURCES_DIR/yazi-flavors"
+fi
 
 backup_zshrc_once() {
 	if [[ -f "$ZSHRC" ]] && [[ "$ZSHRC_BACKED_UP" -eq 0 ]]; then
 		cp "$ZSHRC" "$ZSHRC$BACKUP_SUFFIX"
 		ZSHRC_BACKED_UP=1
 	fi
+}
+
+current_kaku_yazi_flavor() {
+	local config_file="$HOME/.config/kaku/kaku.lua"
+	if [[ -f "$config_file" ]] && grep -Eq "^config\.color_scheme[[:space:]]*=[[:space:]]*['\"]Kaku Light['\"]" "$config_file"; then
+		printf '%s\n' "kaku-light"
+	else
+		printf '%s\n' "kaku-dark"
+	fi
+}
+
+kaku_yazi_theme_block() {
+	local flavor="${1:-$(current_kaku_yazi_flavor)}"
+	cat <<EOF
+$KAKU_YAZI_THEME_MARKER_START
+[flavor]
+dark = "$flavor"
+light = "$flavor"
+$KAKU_YAZI_THEME_MARKER_END
+EOF
+}
+
+is_legacy_kaku_yazi_theme_file() {
+	if [[ ! -f "$YAZI_THEME_FILE" ]]; then
+		return 1
+	fi
+
+	local normalized expected
+	if grep -Fq '# Kaku-aligned theme for Yazi 26.x' "$YAZI_THEME_FILE"; then
+		return 0
+	fi
+	normalized="$(sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' "$YAZI_THEME_FILE")"
+	expected=$'[mgr]\nborder_symbol = "│"\nborder_style = { fg = "#555555" }\n[indicator]\npadding = { open = "", close = "" }'
+	[[ "$normalized" == "$expected" ]]
+}
+
+sync_kaku_yazi_flavors() {
+	if [[ ! -d "$KAKU_YAZI_FLAVOR_SOURCE_DIR" ]]; then
+		echo -e "${YELLOW}Warning: bundled Yazi flavors are missing at $KAKU_YAZI_FLAVOR_SOURCE_DIR.${NC}"
+		return
+	fi
+
+	mkdir -p "$YAZI_FLAVORS_DIR"
+
+	local flavor source_dir target_dir
+	for flavor in kaku-dark.yazi kaku-light.yazi; do
+		source_dir="$KAKU_YAZI_FLAVOR_SOURCE_DIR/$flavor"
+		target_dir="$YAZI_FLAVORS_DIR/$flavor"
+
+		if [[ ! -d "$source_dir" ]]; then
+			echo -e "${YELLOW}Warning: missing bundled Yazi flavor $source_dir.${NC}"
+			continue
+		fi
+
+		mkdir -p "$target_dir"
+		cp "$source_dir/flavor.toml" "$target_dir/flavor.toml"
+	done
+
+	echo -e "  ${GREEN}✓${NC} ${BOLD}Config${NC}      Refreshed Kaku yazi flavors ${NC}(dark + light)${NC}"
+}
+
+ensure_kaku_yazi_theme() {
+	mkdir -p "$YAZI_CONFIG_DIR"
+	local managed_flavor
+	managed_flavor="$(current_kaku_yazi_flavor)"
+
+	if [[ ! -f "$YAZI_THEME_FILE" ]] || is_legacy_kaku_yazi_theme_file; then
+		cat <<EOF >"$YAZI_THEME_FILE"
+"\$schema" = "https://yazi-rs.github.io/schemas/theme.json"
+
+# Kaku manages the [flavor] section below so Yazi matches the current Kaku theme.
+# Add your own theme overrides in other sections if needed.
+$(kaku_yazi_theme_block "$managed_flavor")
+EOF
+		echo -e "  ${GREEN}✓${NC} ${BOLD}Config${NC}      Initialized yazi theme ${NC}(managed Kaku flavor: $managed_flavor)${NC}"
+		return
+	fi
+
+	if grep -Eq '^[[:space:]]*\[flavor\][[:space:]]*$' "$YAZI_THEME_FILE" && ! grep -Fq "$KAKU_YAZI_THEME_MARKER_START" "$YAZI_THEME_FILE"; then
+		echo -e "  ${BLUE}•${NC} ${BOLD}Config${NC}      Preserved existing yazi [flavor] section ${NC}(user-managed)${NC}"
+		return
+	fi
+
+	local tmp_theme
+	tmp_theme="$(mktemp "${TMPDIR:-/tmp}/kaku-yazi-theme.XXXXXX")"
+
+	awk -v start="$KAKU_YAZI_THEME_MARKER_START" -v end="$KAKU_YAZI_THEME_MARKER_END" '
+		index($0, start) { skip = 1; next }
+		index($0, end)   { skip = 0; next }
+		!skip { print }
+	' "$YAZI_THEME_FILE" >"$tmp_theme"
+
+	{
+		cat "$tmp_theme"
+		printf '\n'
+		kaku_yazi_theme_block "$managed_flavor"
+		printf '\n'
+	} >"${tmp_theme}.next"
+
+	mv "${tmp_theme}.next" "$YAZI_THEME_FILE"
+	rm -f "$tmp_theme"
+	echo -e "  ${GREEN}✓${NC} ${BOLD}Config${NC}      Updated yazi theme ${NC}(managed Kaku flavor: $managed_flavor)${NC}"
+}
+
+install_yazi_wrapper() {
+	cat <<'EOF' >"$YAZI_WRAPPER_FILE"
+#!/bin/bash
+set -euo pipefail
+
+YAZI_THEME_FILE="${HOME}/.config/yazi/theme.toml"
+KAKU_CONFIG_FILE="${HOME}/.config/kaku/kaku.lua"
+MARKER_START="# ===== Kaku Yazi Flavor (managed) ====="
+MARKER_END="# ===== End Kaku Yazi Flavor (managed) ====="
+WRAPPER_PATH="${BASH_SOURCE[0]}"
+WRAPPER_DIR="$(cd "$(dirname "$WRAPPER_PATH")" && pwd)"
+
+current_flavor() {
+	if [[ -f "$KAKU_CONFIG_FILE" ]] && grep -Eq "^config\.color_scheme[[:space:]]*=[[:space:]]*['\"]Kaku Light['\"]" "$KAKU_CONFIG_FILE"; then
+		printf '%s\n' "kaku-light"
+	else
+		printf '%s\n' "kaku-dark"
+	fi
+}
+
+managed_block() {
+	local flavor="$1"
+	cat <<BLOCK
+$MARKER_START
+[flavor]
+dark = "$flavor"
+light = "$flavor"
+$MARKER_END
+BLOCK
+}
+
+ensure_theme() {
+	local flavor="$1"
+	mkdir -p "$(dirname "$YAZI_THEME_FILE")"
+
+	if [[ ! -f "$YAZI_THEME_FILE" ]]; then
+		cat <<BLOCK >"$YAZI_THEME_FILE"
+"\$schema" = "https://yazi-rs.github.io/schemas/theme.json"
+
+# Kaku manages the [flavor] section below so Yazi matches the current Kaku theme.
+$(managed_block "$flavor")
+BLOCK
+		return
+	fi
+
+	if grep -Eq '^[[:space:]]*\[flavor\][[:space:]]*$' "$YAZI_THEME_FILE" && ! grep -Fq "$MARKER_START" "$YAZI_THEME_FILE"; then
+		return
+	fi
+
+	local tmp_theme
+	tmp_theme="$(mktemp "${TMPDIR:-/tmp}/kaku-yazi-wrapper.XXXXXX")"
+	awk -v start="$MARKER_START" -v end="$MARKER_END" '
+		index($0, start) { skip = 1; next }
+		index($0, end)   { skip = 0; next }
+		!skip { print }
+	' "$YAZI_THEME_FILE" >"$tmp_theme"
+
+	{
+		cat "$tmp_theme"
+		printf '\n'
+		managed_block "$flavor"
+		printf '\n'
+	} >"${tmp_theme}.next"
+
+	mv "${tmp_theme}.next" "$YAZI_THEME_FILE"
+	rm -f "$tmp_theme"
+}
+
+resolve_real_yazi() {
+	local candidate
+	for candidate in /opt/homebrew/bin/yazi /usr/local/bin/yazi; do
+		if [[ -x "$candidate" && "$candidate" != "$WRAPPER_PATH" ]]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+
+	local path_entry
+	IFS=':' read -r -a path_entries <<< "${PATH:-}"
+	for path_entry in "${path_entries[@]}"; do
+		[[ -z "$path_entry" || "$path_entry" == "$WRAPPER_DIR" ]] && continue
+		candidate="$path_entry/yazi"
+		if [[ -x "$candidate" && "$candidate" != "$WRAPPER_PATH" ]]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+main() {
+	local flavor real_bin
+	flavor="$(current_flavor)"
+	ensure_theme "$flavor"
+
+	if ! real_bin="$(resolve_real_yazi)"; then
+		echo "yazi not found. Install it with: brew install yazi" >&2
+		exit 127
+	fi
+
+	exec "$real_bin" "$@"
+}
+
+main "$@"
+EOF
+	chmod +x "$YAZI_WRAPPER_FILE"
+	echo -e "  ${GREEN}✓${NC} ${BOLD}Config${NC}      Installed yazi wrapper ${NC}(theme sync before launch)${NC}"
 }
 
 # Ensure vendor resources exist
@@ -329,19 +551,9 @@ EOF
 	echo -e "  ${GREEN}✓${NC} ${BOLD}Config${NC}      Initialized yazi keymap ${NC}(~/.config/yazi/keymap.toml)${NC}"
 fi
 
-# Initialize Yazi theme tweaks if the user has not created one yet.
-if [[ ! -f "$YAZI_THEME_FILE" ]]; then
-	mkdir -p "$YAZI_CONFIG_DIR"
-	cat <<EOF >"$YAZI_THEME_FILE"
-[mgr]
-border_symbol = "│"
-border_style = { fg = "#555555" }
-
-[indicator]
-padding = { open = "", close = "" }
-EOF
-	echo -e "  ${GREEN}✓${NC} ${BOLD}Config${NC}      Initialized yazi theme ${NC}(~/.config/yazi/theme.toml)${NC}"
-fi
+sync_kaku_yazi_flavors
+ensure_kaku_yazi_theme
+install_yazi_wrapper
 
 # 3. Create/Update Kaku Init File (managed by Kaku)
 cat <<EOF >"$KAKU_INIT_FILE"
@@ -650,12 +862,17 @@ alias glgp='git log --stat -p'
     emulate -L zsh
     setopt local_options no_sh_word_split
 
-    if ! command -v yazi >/dev/null 2>&1; then
+    local yazi_cmd="\$KAKU_ZSH_DIR/bin/yazi"
+    if [[ ! -x "\$yazi_cmd" ]]; then
+        yazi_cmd="\$(command -v yazi 2>/dev/null || true)"
+    fi
+
+    if [[ -z "\$yazi_cmd" ]]; then
         echo "yazi not found. Install it with: brew install yazi"
         return 127
     fi
 
-    command yazi "\$@"
+    "\$yazi_cmd" "\$@"
 }
 
 # Load Plugins (Performance Optimized)
