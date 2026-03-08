@@ -339,11 +339,17 @@ fn summarize_tool_fields(
 
     if matches!(
         tool,
-        Tool::Codex | Tool::ClaudeCode | Tool::Kimi | Tool::Gemini | Tool::Copilot
+        Tool::Codex | Tool::ClaudeCode | Tool::Kimi | Tool::Copilot
     ) {
         return usage_summary
             .map(str::to_string)
             .or_else(|| Some("Quota unavailable".into()));
+    }
+
+    if tool == Tool::Gemini {
+        if let Some(summary) = usage_summary {
+            return Some(summary.to_string());
+        }
     }
 
     let mut parts = Vec::new();
@@ -569,16 +575,12 @@ fn parse_codex_usage_snapshot(data: &serde_json::Value) -> Option<CodexUsageSnap
     Some(CodexUsageSnapshot { summary })
 }
 
-fn codex_usage_cache_is_fresh(path: &Path) -> bool {
+fn usage_cache_is_fresh(path: &Path) -> bool {
     path.metadata()
         .and_then(|meta| meta.modified())
         .ok()
         .and_then(|modified| modified.elapsed().ok())
         .is_some_and(|elapsed| elapsed < USAGE_CACHE_TTL)
-}
-
-fn load_codex_usage_json_from_cache(path: &Path) -> Option<serde_json::Value> {
-    read_json_file_with_debug(path, "codex usage cache")
 }
 
 fn write_json_cache(path: &Path, value: &serde_json::Value) {
@@ -626,8 +628,8 @@ fn run_curl(args: &[&str]) -> Option<serde_json::Value> {
 
 fn fetch_codex_usage_json() -> Option<serde_json::Value> {
     let cache_path = codex_usage_cache_path();
-    if cache_path.exists() && codex_usage_cache_is_fresh(&cache_path) {
-        return load_codex_usage_json_from_cache(&cache_path);
+    if cache_path.exists() && usage_cache_is_fresh(&cache_path) {
+        return load_usage_json_from_cache(&cache_path, "codex usage cache");
     }
 
     let (access_token, account_id) = read_codex_auth_info()?;
@@ -649,7 +651,7 @@ fn fetch_codex_usage_json() -> Option<serde_json::Value> {
         return Some(value);
     }
 
-    load_codex_usage_json_from_cache(&cache_path)
+    load_usage_json_from_cache(&cache_path, "codex usage cache")
 }
 
 fn load_codex_usage_snapshot() -> Option<CodexUsageSnapshot> {
@@ -669,7 +671,7 @@ fn fetch_usage_json_with_cache<F>(
 where
     F: FnOnce() -> Option<serde_json::Value>,
 {
-    if path.exists() && codex_usage_cache_is_fresh(&path) {
+    if path.exists() && usage_cache_is_fresh(&path) {
         return load_usage_json_from_cache(&path, context);
     }
 
@@ -875,7 +877,7 @@ fn fetch_claude_usage_with_access_token(access_token: &str) -> Option<serde_json
 
 fn fetch_claude_usage_json() -> Option<serde_json::Value> {
     let cache_path = claude_usage_cache_path();
-    if cache_path.exists() && codex_usage_cache_is_fresh(&cache_path) {
+    if cache_path.exists() && usage_cache_is_fresh(&cache_path) {
         if let Some(cached) = load_usage_json_from_cache(&cache_path, "claude usage cache") {
             if parse_claude_usage_error(&cached).is_none() {
                 return Some(cached);
@@ -1090,7 +1092,7 @@ fn fetch_kimi_usage_with_access_token(access_token: &str) -> Option<serde_json::
 
 fn fetch_kimi_usage_json() -> Option<serde_json::Value> {
     let cache_path = kimi_usage_cache_path();
-    if cache_path.exists() && codex_usage_cache_is_fresh(&cache_path) {
+    if cache_path.exists() && usage_cache_is_fresh(&cache_path) {
         if let Some(cached) = load_usage_json_from_cache(&cache_path, "kimi usage cache") {
             if cached.get("usage").is_some() {
                 return Some(cached);
@@ -1099,22 +1101,25 @@ fn fetch_kimi_usage_json() -> Option<serde_json::Value> {
     }
 
     let mut access_token = read_kimi_access_token()?;
+    let mut refreshed = false;
     if kimi_access_token_needs_refresh() {
         access_token = refresh_kimi_access_token()?;
+        refreshed = true;
     }
 
-    let live = fetch_kimi_usage_with_access_token(&access_token)
-        .and_then(|value| {
-            if value.get("usage").is_some() {
-                Some(value)
-            } else {
-                None
-            }
-        })
-        .or_else(|| {
+    let live = if let Some(value) = fetch_kimi_usage_with_access_token(&access_token)
+        .and_then(|value| value.get("usage").is_some().then_some(value))
+    {
+        Some(value)
+    } else if refreshed {
+        None
+    } else {
+        let retried = {
             let refreshed = refresh_kimi_access_token()?;
             fetch_kimi_usage_with_access_token(&refreshed)
-        });
+        };
+        retried.and_then(|value| value.get("usage").is_some().then_some(value))
+    };
 
     if let Some(value) = live {
         write_json_cache(&cache_path, &value);
@@ -3670,12 +3675,48 @@ fn save_kimi_field_at(path: &Path, field_key: &str, new_val: &str) -> anyhow::Re
 }
 
 pub fn run() -> anyhow::Result<()> {
+    struct TerminalGuard {
+        raw_mode: bool,
+        bracketed_paste: bool,
+        alternate_screen: bool,
+    }
+
+    impl TerminalGuard {
+        fn new() -> Self {
+            Self {
+                raw_mode: false,
+                bracketed_paste: false,
+                alternate_screen: false,
+            }
+        }
+    }
+
+    impl Drop for TerminalGuard {
+        fn drop(&mut self) {
+            if self.raw_mode {
+                let _ = disable_raw_mode();
+            }
+
+            let mut stdout = io::stdout();
+            if self.bracketed_paste {
+                let _ = stdout.execute(DisableBracketedPaste);
+            }
+            if self.alternate_screen {
+                let _ = stdout.execute(LeaveAlternateScreen);
+            }
+        }
+    }
+
+    let mut guard = TerminalGuard::new();
     enable_raw_mode().context("enable raw mode")?;
+    guard.raw_mode = true;
     let mut stdout = io::stdout();
     crossterm::execute!(stdout, EnableBracketedPaste).context("enable bracketed paste")?;
+    guard.bracketed_paste = true;
     stdout
         .execute(EnterAlternateScreen)
         .context("enter alternate screen")?;
+    guard.alternate_screen = true;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("create terminal")?;
     terminal
@@ -3685,12 +3726,6 @@ pub fn run() -> anyhow::Result<()> {
     let mut app = App::new();
     let result = run_loop(&mut terminal, &mut app);
 
-    disable_raw_mode().context("disable raw mode")?;
-    let _ = terminal.backend_mut().execute(DisableBracketedPaste);
-    terminal
-        .backend_mut()
-        .execute(LeaveAlternateScreen)
-        .context("leave alternate screen")?;
     terminal.show_cursor().context("show cursor")?;
 
     result
@@ -4147,6 +4182,29 @@ mod tests {
                 Some("5h remain 94% · reset 14m  |  7d remain 67% · reset 4d11h")
             ),
             Some("5h remain 94% · reset 14m  |  7d remain 67% · reset 4d11h".into())
+        );
+    }
+
+    #[test]
+    fn summarize_gemini_falls_back_to_auth_and_model_when_quota_missing() {
+        let fields = vec![
+            FieldEntry {
+                key: "Model".into(),
+                value: "gemini-3.1-flash-lite-preview".into(),
+                options: vec![],
+                editable: true,
+            },
+            FieldEntry {
+                key: "Auth".into(),
+                value: "✓ user@example.com".into(),
+                options: vec![],
+                editable: false,
+            },
+        ];
+
+        assert_eq!(
+            summarize_tool_fields(Tool::Gemini, true, &fields, None),
+            Some("user@example.com · gemini-3.1-flash-lite-preview".into())
         );
     }
 

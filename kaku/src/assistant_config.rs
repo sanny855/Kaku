@@ -203,12 +203,17 @@ fn set_top_level_bool_key_in_content(content: &str, key: &str, value: bool) -> S
         updated_lines.push(line.to_string());
     }
 
-    let mut updated = updated_lines.join("\n");
-    if !replaced {
+    if replaced {
+        let mut updated = updated_lines.join("\n");
+        if content.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated
+    } else {
         let insert_block = format!("{replacement}\n");
         let insert_at = first_table_header_offset(content).unwrap_or(content.len());
         let (before, after) = content.split_at(insert_at);
-        updated = String::with_capacity(content.len() + insert_block.len() + 2);
+        let mut updated = String::with_capacity(content.len() + insert_block.len() + 2);
 
         let before_trimmed = before.trim_end_matches(['\r', '\n']);
         updated.push_str(before_trimmed);
@@ -219,11 +224,8 @@ fn set_top_level_bool_key_in_content(content: &str, key: &str, value: bool) -> S
         if !after.is_empty() {
             updated.push_str(after.trim_start_matches(['\r', '\n']));
         }
-    } else if content.ends_with('\n') {
-        updated.push('\n');
+        updated
     }
-
-    updated
 }
 
 fn first_table_header_offset(content: &str) -> Option<usize> {
