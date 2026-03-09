@@ -1739,6 +1739,16 @@ impl WindowInner {
     /// and forces the window to recalculate screen-dependent state.
     pub(crate) fn refresh_after_display_change(&mut self) -> bool {
         if let Some(window_view) = WindowView::get_this(unsafe { &**self.view }) {
+            // Skip triggering a resize during a fullscreen transition. The transition
+            // callbacks (did_enter/exit_fullscreen) will dispatch the final resize when
+            // stable. Firing an extra screen-change resize during the animation causes
+            // flickering with status bar apps (e.g. sketchybar) that emit
+            // NSApplicationDidChangeScreenParametersNotification as they adjust.
+            if window_view.native_fullscreen_transition_active.get()
+                || window_view.simple_fullscreen_transition_active.get()
+            {
+                return true;
+            }
             if let Ok(mut inner) = window_view.inner.try_borrow_mut() {
                 if let Some(gl_context_pair) = inner.gl_context_pair.as_ref() {
                     log::debug!(
@@ -4270,6 +4280,10 @@ impl WindowView {
                 let mut inner = this.inner.borrow_mut();
                 inner.live_resizing = false;
                 inner.paint_throttled = false;
+                // Clear any screen_changed flag accumulated during the transition
+                // (e.g. from sketchybar firing NSApplicationDidChangeScreenParametersNotification)
+                // so the upcoming NeedRepaint paints immediately instead of doing another resize.
+                inner.screen_changed = false;
                 inner.invalidated = true;
                 inner.events.dispatch(WindowEvent::NeedRepaint);
             }
@@ -4317,6 +4331,10 @@ impl WindowView {
             {
                 if let Ok(mut inner) = this.inner.try_borrow_mut() {
                     inner.paint_throttled = false;
+                    // Clear any screen_changed flag accumulated during the transition
+                    // (e.g. from sketchybar firing NSApplicationDidChangeScreenParametersNotification)
+                    // so the upcoming NeedRepaint paints immediately instead of doing another resize.
+                    inner.screen_changed = false;
                     inner.invalidated = true;
                     inner.live_resizing = false;
                     inner.events.dispatch(WindowEvent::NeedRepaint);
