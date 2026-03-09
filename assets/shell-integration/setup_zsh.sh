@@ -606,8 +606,12 @@ if command -v starship &> /dev/null; then
                 if [[ "\${_kaku_starship_rprompt_cmd}" == *starship*'prompt --right'* ]]; then
                     evaled="\$(_kaku_render_starship_rprompt)"
                 else
-                    local cmd="\${_kaku_starship_rprompt_cmd#\\$\\(}"
-                    cmd="\${cmd%\\)}"
+                    local cmd="\${_kaku_starship_rprompt_cmd}"
+                    # Avoid zsh pattern parsing here; strip a literal \$(
+                    # prefix and trailing ) via slicing instead.
+                    if [[ "\${cmd[1]}" == '$' && "\${cmd[2]}" == '(' && "\${cmd[-1]}" == ')' ]]; then
+                        cmd="\${cmd[3,-2]}"
+                    fi
                     evaled="\$(eval "\$cmd" 2>/dev/null)"
                 fi
                 RPROMPT="\$evaled"

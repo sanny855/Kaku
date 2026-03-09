@@ -116,4 +116,40 @@ case "$output" in
     ;;
 esac
 
+seeded_output=""
+if ! seeded_output="$(
+  TERM=xterm-256color \
+  PATH="$tmp_dir/bin:$PATH" \
+  HOME="$HOME" \
+  ZDOTDIR="$ZDOTDIR" \
+  zsh -f -c '
+source "$HOME/.config/kaku/zsh/kaku.zsh"
+RPROMPT='\''$(echo fake-right-prompt)'\''
+_kaku_starship_rprompt_cmd="$RPROMPT"
+_kaku_fix_starship_rprompt
+print -r -- "__KAKU_SEEDED__:$RPROMPT"
+' 2>&1
+)"; then
+  echo "starship_rprompt: seeded zsh exited non-zero:" >&2
+  echo "$seeded_output" >&2
+  exit 1
+fi
+
+case "$seeded_output" in
+  *__KAKU_SEEDED__:fake-right-prompt* ) ;;
+  * )
+    echo "starship_rprompt: seeded sentinel missing or wrong output:" >&2
+    echo "$seeded_output" >&2
+    exit 1
+    ;;
+esac
+
+case "$seeded_output" in
+  *"closing brace expected"* | *"bad pattern"* )
+    echo "starship_rprompt: seeded zsh pattern error:" >&2
+    echo "$seeded_output" >&2
+    exit 1
+    ;;
+esac
+
 echo "starship_rprompt smoke test passed"
