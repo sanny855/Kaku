@@ -26,9 +26,7 @@ impl crate::TermWindow {
         &mut self,
         layers: &mut TripleLayerQuadAllocator,
     ) -> anyhow::Result<()> {
-        let is_fullscreen = self
-            .window_state
-            .contains(::window::WindowState::FULL_SCREEN);
+        let is_fullscreen = self.layout_is_effective_fullscreen();
         // Keep border geometry consistent with pane layout.
         // In fullscreen we still need user window_frame border widths;
         // OS border (eg: notch safe-area) is merged by get_os_border().
@@ -231,9 +229,7 @@ impl crate::TermWindow {
             &self.render_metrics,
         );
 
-        let is_fullscreen = self
-            .window_state
-            .contains(::window::WindowState::FULL_SCREEN);
+        let is_fullscreen = self.layout_is_effective_fullscreen();
         let extra_top = integrated_buttons_top_inset(
             &self.config,
             is_fullscreen,

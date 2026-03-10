@@ -317,7 +317,7 @@ impl crate::TermWindow {
             .window_decorations
             .contains(::window::WindowDecorations::INTEGRATED_BUTTONS)
             && self.config.integrated_title_button_style == IntegratedTitleButtonStyle::MacOsNative
-            && !self.window_state.contains(window::WindowState::FULL_SCREEN)
+            && !self.layout_is_effective_fullscreen()
         {
             left_status.push(
                 Element::new(&font, ElementContent::Text("".to_string())).margin(BoxDimension {
@@ -379,7 +379,7 @@ impl crate::TermWindow {
                 || self.config.integrated_title_button_style
                     == IntegratedTitleButtonStyle::MacOsNative);
 
-        let is_fullscreen = self.window_state.contains(window::WindowState::FULL_SCREEN);
+        let is_fullscreen = self.layout_is_effective_fullscreen();
         let left_padding = if is_fullscreen {
             Dimension::Pixels(self.content_left_inset())
         } else if window_buttons_at_left {

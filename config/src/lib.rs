@@ -517,6 +517,35 @@ pub fn user_config_path() -> PathBuf {
         .join("kaku.lua")
 }
 
+fn effective_config_file_path_from(
+    config_file_override: Option<PathBuf>,
+    loaded_config_file: Option<OsString>,
+    default_path: PathBuf,
+) -> PathBuf {
+    if let Some(path) = config_file_override {
+        return path;
+    }
+    if let Some(path) = loaded_config_file {
+        return path.into();
+    }
+    default_path
+}
+
+/// Returns the currently effective config file path.
+///
+/// Priority:
+/// 1) explicit `--config-file` override
+/// 2) path of the loaded config (`KAKU_CONFIG_FILE`)
+/// 3) default user config path
+pub fn effective_config_file_path() -> PathBuf {
+    let config_file_override = CONFIG_FILE_OVERRIDE.lock().unwrap().clone();
+    effective_config_file_path_from(
+        config_file_override,
+        std::env::var_os("KAKU_CONFIG_FILE"),
+        user_config_path(),
+    )
+}
+
 pub fn ensure_user_config_exists() -> anyhow::Result<PathBuf> {
     let config_path = user_config_path();
     ensure_config_exists_at_path(&config_path)
@@ -851,6 +880,32 @@ mod tests {
         );
         assert_eq!(dirs, vec![PathBuf::from("/custom/config").join("kaku")]);
     }
+
+    #[test]
+    fn effective_config_file_path_prefers_override() {
+        let path = effective_config_file_path_from(
+            Some(PathBuf::from("/override/kaku.lua")),
+            Some(OsString::from("/loaded/kaku.lua")),
+            PathBuf::from("/default/kaku.lua"),
+        );
+        assert_eq!(path, PathBuf::from("/override/kaku.lua"));
+    }
+
+    #[test]
+    fn effective_config_file_path_uses_loaded_when_no_override() {
+        let path = effective_config_file_path_from(
+            None,
+            Some(OsString::from("/loaded/kaku.lua")),
+            PathBuf::from("/default/kaku.lua"),
+        );
+        assert_eq!(path, PathBuf::from("/loaded/kaku.lua"));
+    }
+
+    #[test]
+    fn effective_config_file_path_falls_back_to_default() {
+        let path = effective_config_file_path_from(None, None, PathBuf::from("/default/kaku.lua"));
+        assert_eq!(path, PathBuf::from("/default/kaku.lua"));
+    }
 }
 
 pub fn set_config_file_override(path: &Path) {
@@ -858,6 +913,14 @@ pub fn set_config_file_override(path: &Path) {
         .lock()
         .unwrap()
         .replace(path.to_path_buf());
+}
+
+pub fn config_file_override() -> Option<PathBuf> {
+    CONFIG_FILE_OVERRIDE.lock().unwrap().clone()
+}
+
+pub fn clear_config_file_override() {
+    CONFIG_FILE_OVERRIDE.lock().unwrap().take();
 }
 
 pub fn set_config_overrides(items: &[(String, String)]) -> anyhow::Result<()> {

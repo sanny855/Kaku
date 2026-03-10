@@ -100,6 +100,8 @@ const VSCODE_OPEN_CANDIDATES: &[&str] = &[
     "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
 ];
 
+const TOP_TAB_LAYOUT_FULLSCREEN_STICKY_MS: u64 = 160;
+
 #[derive(Clone, Debug)]
 struct FileLinkTarget {
     path: PathBuf,
@@ -777,6 +779,8 @@ pub struct TermWindow {
     config_subscription: Option<config::ConfigSubscription>,
     pending_config_reload_after_resize: bool,
     silent_reload_queued: bool,
+    deferred_layout_relayout_epoch: usize,
+    layout_sticky_fullscreen_until: Option<Instant>,
     closed_tab_history: std::collections::VecDeque<PathBuf>,
 
     /// Toast notification: (start_time, message, lifetime)
@@ -785,13 +789,24 @@ pub struct TermWindow {
 }
 
 impl TermWindow {
-    fn should_reload_config_for_user_var(name: &str, window_contains_pane: bool) -> bool {
-        window_contains_pane && name == "KAKU_CONFIG_CHANGED"
+    fn should_reload_config_for_user_var(name: &str, _window_contains_pane: bool) -> bool {
+        // We used to require `window_contains_pane && name == "KAKU_CONFIG_CHANGED"`
+        // to avoid duplicate reloads when multiple windows are open. However, when
+        // a user exits `kaku config` very quickly (e.g. by hitting ESC), the pane
+        // might already be removed from Mux before the OSC 1337 is processed by
+        // `emit_user_var_event`, meaning `window_contains_pane` evaluates to false.
+        // This caused the config reload to be dropped. By returning true globally
+        // for `KAKU_CONFIG_CHANGED`, we ensure the reload happens. The `config::reload()`
+        // function has its own debouncing mechanism (reload_epoch) to prevent
+        // duplicate reloads across windows.
+        name == "KAKU_CONFIG_CHANGED"
     }
 
     fn load_os_parameters(&mut self) {
         if let Some(ref window) = self.window {
-            self.os_parameters = match window.get_os_parameters(&self.config, self.window_state) {
+            self.os_parameters = match window
+                .get_os_parameters(&self.config, self.effective_layout_window_state())
+            {
                 Ok(os_parameters) => os_parameters,
                 Err(err) => {
                     log::warn!("Error while getting OS parameters: {:#}", err);
@@ -878,6 +893,9 @@ impl TermWindow {
 
     fn focus_changed(&mut self, focused: bool, window: &Window) {
         log::trace!("Setting focus to {:?}", focused);
+        if !self.config.tab_bar_at_bottom && self.layout_is_effective_fullscreen() {
+            self.arm_layout_sticky_fullscreen();
+        }
         self.focused = if focused { Some(Instant::now()) } else { None };
         self.quad_generation += 1;
         self.load_os_parameters();
@@ -901,6 +919,26 @@ impl TermWindow {
         // Reset the cursor blink phase
         self.prev_cursor.bump();
 
+        let immediate_relayout_needed = self.config.tab_bar_at_bottom; // Only immediate for bottom-tab
+
+        if focused && immediate_relayout_needed {
+            // Some macOS Space switches do not reliably emit a visibility-change
+            // callback. Re-apply layout on focus gain for bottom-tab layouts,
+            // where stale tab-bar visibility is most noticeable.
+            self.sync_tab_bar_visibility_for_window_state("focus_changed:sync_tab_bar");
+            let dimensions = self.dimensions;
+            self.apply_dimensions(&dimensions, None, window);
+            self.schedule_deferred_layout_relayout(window);
+        } else if focused && !self.config.tab_bar_at_bottom {
+            // Top-tab (both fullscreen and non-fullscreen): ONLY run a deferred
+            // relayout. Lua config overrides (window_padding) take time to arrive
+            // after we gain focus. If we `apply_dimensions` immediately, we will
+            // draw 1 frame with the old padding, causing a visible flicker.
+            // Deferring gives Lua's `window-focus-changed` handler time to push
+            // the new override.
+            self.schedule_deferred_layout_relayout(window);
+        }
+
         // force cursor to be repainted
         window.invalidate();
 
@@ -922,13 +960,29 @@ impl TermWindow {
 
     fn visibility_changed(&mut self, visible: bool, window: &Window) {
         log::trace!("Setting visibility to {:?}", visible);
+        if !self.config.tab_bar_at_bottom && self.layout_is_effective_fullscreen() {
+            self.arm_layout_sticky_fullscreen();
+        }
         self.quad_generation += 1;
 
         if visible {
-            self.load_os_parameters();
-            self.invalidate_fancy_tab_bar();
-            let dimensions = self.dimensions;
-            self.apply_dimensions(&dimensions, None, window);
+            let immediate_relayout_needed = self.config.tab_bar_at_bottom;
+
+            if immediate_relayout_needed {
+                self.load_os_parameters();
+                self.invalidate_fancy_tab_bar();
+                self.sync_tab_bar_visibility_for_window_state("visibility_changed:sync_tab_bar");
+                let dimensions = self.dimensions;
+                self.apply_dimensions(&dimensions, None, window);
+                self.schedule_deferred_layout_relayout(window);
+            } else if !self.config.tab_bar_at_bottom {
+                // Top-tab: ONLY run deferred relayout.
+                // Prevent 1-frame flicker while waiting for Lua padding overrides
+                // just like in `focus_changed`.
+                self.load_os_parameters();
+                self.invalidate_fancy_tab_bar();
+                self.schedule_deferred_layout_relayout(window);
+            }
         } else {
             self.invalidate_fancy_tab_bar();
         }
@@ -965,6 +1019,76 @@ impl TermWindow {
 }
 
 impl TermWindow {
+    fn arm_layout_sticky_fullscreen(&mut self) {
+        if self.config.tab_bar_at_bottom {
+            return;
+        }
+
+        self.layout_sticky_fullscreen_until =
+            Some(Instant::now() + Duration::from_millis(TOP_TAB_LAYOUT_FULLSCREEN_STICKY_MS));
+    }
+
+    fn layout_sticky_fullscreen_active(&self) -> bool {
+        !self.config.tab_bar_at_bottom
+            && self
+                .layout_sticky_fullscreen_until
+                .map(|until| Instant::now() < until)
+                .unwrap_or(false)
+    }
+
+    pub(crate) fn effective_layout_window_state(&self) -> WindowState {
+        let mut state = self.window_state;
+        if self.layout_sticky_fullscreen_active() {
+            state |= WindowState::FULL_SCREEN;
+        }
+        state
+    }
+
+    pub(crate) fn layout_is_effective_fullscreen(&self) -> bool {
+        self.effective_layout_window_state()
+            .contains(WindowState::FULL_SCREEN)
+    }
+
+    fn schedule_deferred_layout_relayout(&mut self, window: &Window) {
+        // Deferred relayout runs for all layout modes (bottom-tab, top-tab, fullscreen).
+        // Top-tab is included because Lua's config override (window_padding /
+        // hide_tab_bar_if_only_one_tab) may arrive after focus/visibility callbacks.
+
+        // Give top-tab fullscreen extra time to let Lua's update-right-status
+        // config override settle before we recompute dimensions.  For all
+        // other cases the original 16 ms frame-skip is sufficient.
+        let delay_ms: u64 =
+            if !self.config.tab_bar_at_bottom && self.layout_is_effective_fullscreen() {
+                80
+            } else {
+                16
+            };
+        self.deferred_layout_relayout_epoch = self.deferred_layout_relayout_epoch.wrapping_add(1);
+        let epoch = self.deferred_layout_relayout_epoch;
+
+        let window = window.clone();
+        promise::spawn::spawn_into_main_thread(async move {
+            // Defer one frame so macOS can settle fullscreen/Space visibility state.
+            Timer::after(Duration::from_millis(delay_ms)).await;
+            window.notify(TermWindowNotif::Apply(Box::new(move |tw| {
+                if tw.deferred_layout_relayout_epoch != epoch {
+                    return;
+                }
+                if let Some(owned_window) = tw.window.as_ref().cloned() {
+                    tw.load_os_parameters();
+                    tw.invalidate_fancy_tab_bar();
+                    tw.sync_tab_bar_visibility_for_window_state(
+                        "deferred_layout_relayout:sync_tab_bar",
+                    );
+                    let dimensions = tw.dimensions;
+                    tw.apply_dimensions(&dimensions, None, &owned_window);
+                    owned_window.invalidate();
+                }
+            })));
+        })
+        .detach();
+    }
+
     fn schedule_silent_config_reload(&mut self, window: &Window) {
         if self.silent_reload_queued {
             return;
@@ -1116,6 +1240,8 @@ impl TermWindow {
             config_subscription: None,
             pending_config_reload_after_resize: false,
             silent_reload_queued: false,
+            deferred_layout_relayout_epoch: 0,
+            layout_sticky_fullscreen_until: None,
             closed_tab_history: std::collections::VecDeque::new(),
             os_parameters: None,
             gl: None,
@@ -2241,14 +2367,14 @@ impl TermWindow {
             self.show_tab_bar,
             self.config.tab_bar_at_bottom,
             tab_bar_height,
-            self.window_state.contains(WindowState::FULL_SCREEN),
+            self.layout_is_effective_fullscreen(),
         )
     }
 
     /// Decide whether the tab bar should be visible based on tab count,
     /// fullscreen state, and config.
     fn should_show_tab_bar(&self, num_tabs: usize) -> bool {
-        let is_full_screen = self.window_state.contains(WindowState::FULL_SCREEN);
+        let is_full_screen = self.layout_is_effective_fullscreen();
         if is_full_screen {
             // Always show tab bar in fullscreen mode to display the right status (time)
             self.config.enable_tab_bar
@@ -2257,6 +2383,26 @@ impl TermWindow {
         } else {
             self.config.enable_tab_bar
         }
+    }
+
+    fn sync_tab_bar_visibility_for_window_state(&mut self, _reason: &'static str) -> bool {
+        let mux = Mux::get();
+        let Some(window) = mux.get_window(self.mux_window_id) else {
+            return false;
+        };
+
+        let show_tab_bar = self.should_show_tab_bar(window.len());
+        if show_tab_bar == self.show_tab_bar {
+            return false;
+        }
+
+        self.show_tab_bar = show_tab_bar;
+        if show_tab_bar && self.config.use_fancy_tab_bar {
+            let _ = self.fonts.title_font();
+        }
+        self.fancy_tab_bar.take();
+        self.invalidate_fancy_tab_bar();
+        true
     }
 
     fn palette(&mut self) -> &ColorPalette {
@@ -2408,6 +2554,7 @@ impl TermWindow {
 
         if let Some(window) = self.window.as_ref().map(|w| w.clone()) {
             self.load_os_parameters();
+            self.sync_tab_bar_visibility_for_window_state("config_reload");
             self.apply_scale_change(&dimensions, self.fonts.get_font_scale());
             self.apply_dimensions(&dimensions, None, &window);
             self.update_scrollbar();
@@ -2415,7 +2562,13 @@ impl TermWindow {
             // new palette in the same invalidate cycle as pane colors.
             self.update_title_impl();
             window.config_did_change(&config);
+            self.quad_generation += 1;
             window.invalidate();
+
+            // Schedule a deferred layout to ensure macOS window frames and native titlebars
+            // correctly reposition themselves when configs that shift content (like tab_bar_at_bottom)
+            // or window_padding are toggled.
+            self.schedule_deferred_layout_relayout(&window);
         }
 
         // Do this after we've potentially adjusted scaling based on config/padding
@@ -2755,7 +2908,7 @@ impl TermWindow {
             },
             &tabs,
             &panes,
-            self.window_state.contains(WindowState::FULL_SCREEN),
+            self.layout_is_effective_fullscreen(),
             self.config.resolved_palette.tab_bar.as_ref(),
             &self.config,
             &self.left_status,
@@ -2830,29 +2983,17 @@ impl TermWindow {
             }
         };
 
-        if let Some(window) = self.window.as_ref() {
+        if let Some(window) = self.window.as_ref().cloned() {
             window.set_title(&title);
-
-            let show_tab_bar = self.should_show_tab_bar(num_tabs);
 
             // If the number of tabs changed and caused the tab bar to
             // hide/show, then we'll need to resize things. We only update
             // what's needed for tab bar visibility to avoid the stutter
             // caused by a full config_was_reloaded() call.
-            if show_tab_bar != self.show_tab_bar {
-                let owned_window = window.clone();
-                self.show_tab_bar = show_tab_bar;
-                // Pre-warm the title font so the first paint of the tab bar
-                // does not block on lazy font loading (which causes a stutter
-                // specifically at the 1↔2 tab boundary).
-                if show_tab_bar && self.config.use_fancy_tab_bar {
-                    let _ = self.fonts.title_font();
-                }
-                self.fancy_tab_bar.take();
-                self.invalidate_fancy_tab_bar();
+            if self.sync_tab_bar_visibility_for_window_state("update_title:sync_tab_bar") {
                 let dimensions = self.dimensions;
-                self.apply_dimensions(&dimensions, None, &owned_window);
-                owned_window.invalidate();
+                self.apply_dimensions(&dimensions, None, &window);
+                window.invalidate();
             }
         }
         self.schedule_next_status_update();
@@ -4670,19 +4811,7 @@ mod tests {
     use super::TermWindow;
 
     #[test]
-    fn config_changed_reload_requires_pane_to_belong_to_window() {
-        assert!(!TermWindow::should_reload_config_for_user_var(
-            "KAKU_CONFIG_CHANGED",
-            false
-        ));
-        assert!(TermWindow::should_reload_config_for_user_var(
-            "KAKU_CONFIG_CHANGED",
-            true
-        ));
-    }
-
-    #[test]
-    fn unrelated_user_var_never_triggers_config_reload() {
+    fn other_user_vars_never_trigger_reload() {
         assert!(!TermWindow::should_reload_config_for_user_var(
             "SOME_OTHER_USER_VAR",
             true

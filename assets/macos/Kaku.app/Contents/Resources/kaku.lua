@@ -10,8 +10,6 @@ if os.getenv('KAKU_STRICT_CONFIG') == '1' and wezterm.config_builder then
   config = wezterm.config_builder()
 end
 
-
-
 local function basename(path)
   return path:match('([^/]+)$')
 end
@@ -46,82 +44,6 @@ local function set_yazi_mode_hint(pane, active)
   end
 end
 
-local function pane_is_yazi(pane)
-  if not pane then
-    return false
-  end
-
-  local hint_key = pane_hint_key(pane)
-  if hint_key and yazi_mode_hints[hint_key] then
-    local alt_ok, is_alt_screen = pcall(function()
-      return pane:is_alt_screen_active()
-    end)
-    if alt_ok and is_alt_screen then
-      return true
-    end
-    if alt_ok and not is_alt_screen then
-      yazi_mode_hints[hint_key] = nil
-    end
-  end
-
-  local function is_yazi_cmd(value)
-    if type(value) ~= "string" or value == "" then
-      return false
-    end
-    return basename(value) == "yazi"
-  end
-
-  local function process_info_contains_yazi(info)
-    if type(info) ~= "table" then
-      return false
-    end
-
-    if is_yazi_cmd(info.name and tostring(info.name) or "") then
-      return true
-    end
-
-    if is_yazi_cmd(info.executable and tostring(info.executable) or "") then
-      return true
-    end
-
-    if type(info.argv) == "table" then
-      for _, arg in ipairs(info.argv) do
-        if is_yazi_cmd(tostring(arg)) then
-          return true
-        end
-      end
-    end
-
-    if type(info.children) == "table" then
-      for _, child in pairs(info.children) do
-        if process_info_contains_yazi(child) then
-          return true
-        end
-      end
-    end
-
-    return false
-  end
-
-  local ok, proc = pcall(function()
-    return pane:get_foreground_process_name()
-  end)
-  if ok and is_yazi_cmd(proc) then
-    set_yazi_mode_hint(pane, true)
-    return true
-  end
-
-  local info_ok, info = pcall(function()
-    return pane:get_foreground_process_info()
-  end)
-  if info_ok and process_info_contains_yazi(info) then
-    set_yazi_mode_hint(pane, true)
-    return true
-  end
-
-  return false
-end
-
 -- URL decode helper for Chinese characters in paths
 -- Converts %E9%9F%B3%E4%B9%90 -> 音乐
 local function url_decode(str)
@@ -133,14 +55,6 @@ local function url_decode(str)
     return string.char(tonumber(hex, 16))
   end)
   return result
-end
-
-local function padding_matches(current, expected)
-  return current
-    and current.left == expected.left
-    and current.right == expected.right
-    and current.top == expected.top
-    and current.bottom == expected.bottom
 end
 
 local function default_kaku_user_config_path()
@@ -187,8 +101,6 @@ local function kaku_user_config_path()
 end
 
 local user_has_custom_padding = false
-local user_has_custom_hide_tab_bar = false
-local user_has_custom_content_alignment = false
 local user_has_custom_font = false
 local user_has_custom_font_rules = false
 
@@ -207,12 +119,6 @@ local function check_user_custom_config()
     if trimmed and not trimmed:match('^%-%-') then
       if trimmed:match('^config%.window_padding%s*=') then
         user_has_custom_padding = true
-      end
-      if trimmed:match('^config%.hide_tab_bar_if_only_one_tab%s*=') then
-        user_has_custom_hide_tab_bar = true
-      end
-      if trimmed:match('^config%.window_content_alignment%s*=') then
-        user_has_custom_content_alignment = true
       end
       if trimmed:match('^config%.font%s*=') then
         user_has_custom_font = true
@@ -288,33 +194,9 @@ local function get_default_padding()
   return { left = '40px', right = '40px', top = '40px', bottom = '0px' }
 end
 
-local function get_fullscreen_padding()
-  local default_padding = get_default_padding()
-  if low_resolution_screen then
-    return { left = default_padding.left, right = default_padding.right, top = '14px', bottom = '0px' }
-  end
-  return { left = default_padding.left, right = default_padding.right, top = '20px', bottom = '0px' }
-end
-
-local function get_yazi_padding()
-  if low_resolution_screen then
-    return { left = '26px', right = '26px', top = '26px', bottom = '0px' }
-  end
-  return { left = '40px', right = '40px', top = '40px', bottom = '0px' }
-end
-
-local function get_yazi_fullscreen_padding()
-  local yazi_padding = get_yazi_padding()
-  if low_resolution_screen then
-    return { left = yazi_padding.left, right = yazi_padding.right, top = '8px', bottom = '0px' }
-  end
-  return { left = yazi_padding.left, right = yazi_padding.right, top = '10px', bottom = '0px' }
-end
-
-local fullscreen_uniform_padding = get_fullscreen_padding()
-local default_uniform_padding = get_default_padding()
-local yazi_uniform_padding = get_yazi_padding()
-local yazi_fullscreen_padding = get_yazi_fullscreen_padding()
+-- get_fullscreen_padding and get_yazi_fullscreen_padding have been removed.
+-- Fullscreen padding adjustments are now handled synchronously in Rust (resize.rs)
+-- to avoid async layout jitter.
 
 -- Per-window resize debounce state.
 -- Weak keys ensure closed windows don't leak state.
@@ -334,7 +216,7 @@ local function dims_hash(dims)
   return dims.pixel_width .. "x" .. dims.pixel_height
 end
 
-local function update_window_config(window, is_full_screen, pane)
+local function update_window_config(window, is_full_screen, _pane)
   local now = monotonic_now()
   local dims = window:get_dimensions()
   local current_hash = dims_hash(dims)
@@ -343,68 +225,35 @@ local function update_window_config(window, is_full_screen, pane)
     state = {
       last_resize_time = 0,
       last_dims_hash = "",
+      last_is_full_screen = is_full_screen == true,
     }
     resize_state_by_window[window] = state
   end
+  -- macOS Space/focus transitions can briefly report `is_full_screen=false`
+  -- while the window is unfocused. If we immediately downgrade overrides
+  -- in that transient frame, returning focus causes a visible padding jump.
+  local effective_full_screen = is_full_screen
+  if not effective_full_screen and state.last_is_full_screen then
+    local ok_focused, focused = pcall(function()
+      return window:is_focused()
+    end)
+    if ok_focused and not focused then
+      effective_full_screen = true
+    end
+  end
   local overrides = window:get_config_overrides() or {}
   local needs_update = false
-  local pane_is_yazi_active = pane_is_yazi(pane)
 
-  -- Determine expected padding based on mode.
-  local expected_padding
-  if pane_is_yazi_active and is_full_screen then
-    expected_padding = yazi_fullscreen_padding
-  elseif pane_is_yazi_active then
-    expected_padding = yazi_uniform_padding
-  elseif is_full_screen then
-    expected_padding = fullscreen_uniform_padding
-  else
-    expected_padding = default_uniform_padding
-  end
+  -- Padding is now owned by the base config plus Rust layout policy.
+  -- Keep overrides cleared so focus/resize transitions don't trigger a
+  -- redundant config reload just to restate the default value.
+  local padding_needs_update = overrides.window_padding ~= nil
 
-  -- Check if each setting needs update (skip if user has custom config).
-  local padding_needs_update = false
-  if user_has_custom_padding then
-    padding_needs_update = overrides.window_padding ~= nil
-  else
-    padding_needs_update = not padding_matches(overrides.window_padding, expected_padding)
-  end
-
-  local tab_bar_needs_update = false
-  if user_has_custom_hide_tab_bar then
-    tab_bar_needs_update = overrides.hide_tab_bar_if_only_one_tab ~= nil
-  else
-    if pane_is_yazi_active and is_full_screen then
-      tab_bar_needs_update = overrides.hide_tab_bar_if_only_one_tab ~= false
-    elseif pane_is_yazi_active then
-      tab_bar_needs_update = overrides.hide_tab_bar_if_only_one_tab ~= nil
-    elseif is_full_screen then
-      tab_bar_needs_update = overrides.hide_tab_bar_if_only_one_tab ~= false
-    else
-      tab_bar_needs_update = overrides.hide_tab_bar_if_only_one_tab ~= nil
-    end
-  end
-
-  local alignment_needs_update = false
-  if user_has_custom_content_alignment then
-    alignment_needs_update = overrides.window_content_alignment ~= nil
-  else
-    if pane_is_yazi_active and is_full_screen then
-      local align = overrides.window_content_alignment
-      local align_is_center = type(align) == 'table'
-        and align.vertical == 'Center' and align.horizontal == 'Left'
-      alignment_needs_update = not align_is_center
-    elseif pane_is_yazi_active then
-      alignment_needs_update = overrides.window_content_alignment ~= nil
-    elseif is_full_screen then
-      local align = overrides.window_content_alignment
-      local align_is_center = type(align) == 'table'
-        and align.vertical == 'Center' and align.horizontal == 'Left'
-      alignment_needs_update = not align_is_center
-    else
-      alignment_needs_update = overrides.window_content_alignment ~= nil
-    end
-  end
+  -- Top-tab fullscreen layout is now computed entirely in Rust so Space/app
+  -- switches do not bounce through a second config reload that changes
+  -- hide_tab_bar_if_only_one_tab or window_content_alignment.
+  local tab_bar_needs_update = overrides.hide_tab_bar_if_only_one_tab ~= nil
+  local alignment_needs_update = overrides.window_content_alignment ~= nil
 
   needs_update = padding_needs_update
     or tab_bar_needs_update
@@ -418,6 +267,7 @@ local function update_window_config(window, is_full_screen, pane)
       -- Rapid change detected, skip this update
       state.last_dims_hash = current_hash
       state.last_resize_time = now
+      state.last_is_full_screen = effective_full_screen
       return
     end
     state.last_dims_hash = current_hash
@@ -425,44 +275,15 @@ local function update_window_config(window, is_full_screen, pane)
   end
 
   if not needs_update then
+    state.last_is_full_screen = effective_full_screen
     return
   end
 
-  -- Apply settings only if user hasn't customized them.
-  if user_has_custom_padding then
-    overrides.window_padding = nil
-  else
-    overrides.window_padding = expected_padding
-  end
+  overrides.window_padding = nil
+  overrides.hide_tab_bar_if_only_one_tab = nil
+  overrides.window_content_alignment = nil
 
-  if user_has_custom_hide_tab_bar then
-    overrides.hide_tab_bar_if_only_one_tab = nil
-  else
-    if pane_is_yazi_active and is_full_screen then
-      overrides.hide_tab_bar_if_only_one_tab = false
-    elseif pane_is_yazi_active then
-      overrides.hide_tab_bar_if_only_one_tab = nil
-    elseif is_full_screen then
-      overrides.hide_tab_bar_if_only_one_tab = false
-    else
-      overrides.hide_tab_bar_if_only_one_tab = nil
-    end
-  end
-
-  if user_has_custom_content_alignment then
-    overrides.window_content_alignment = nil
-  else
-    if pane_is_yazi_active and is_full_screen then
-      overrides.window_content_alignment = { horizontal = 'Left', vertical = 'Center' }
-    elseif pane_is_yazi_active then
-      overrides.window_content_alignment = nil
-    elseif is_full_screen then
-      overrides.window_content_alignment = { horizontal = 'Left', vertical = 'Center' }
-    else
-      overrides.window_content_alignment = nil
-    end
-  end
-
+  state.last_is_full_screen = effective_full_screen
   window:set_config_overrides(overrides)
 end
 
@@ -3073,7 +2894,6 @@ config.scrollback_lines = 10000
 config.selection_word_boundary = ' \t\n{}[]()"\'-'  -- Smart selection boundaries
 
 -- ===== Window Layout =====
-config.window_padding = get_default_padding()
 config.use_resize_increments = true
 
 config.initial_cols = 110
@@ -3099,6 +2919,10 @@ config.tab_max_width = 32
 config.hide_tab_bar_if_only_one_tab = true
 config.show_tab_index_in_tab_bar = true
 config.show_new_tab_button_in_tab_bar = false
+
+-- Compute padding after tab-bar placement is finalized so startup layout
+-- matches the runtime override path.
+config.window_padding = get_default_padding()
 
 -- ===== Color Scheme =====
 local kaku_theme = {
