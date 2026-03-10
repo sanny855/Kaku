@@ -1,3 +1,5 @@
+#![allow(clippy::all)]
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 

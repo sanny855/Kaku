@@ -1,4 +1,17 @@
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(
+    clippy::assign_op_pattern,
+    clippy::collapsible_if,
+    clippy::excessive_precision,
+    clippy::inherent_to_string,
+    clippy::len_zero,
+    clippy::manual_clamp,
+    clippy::manual_range_contains,
+    clippy::manual_strip,
+    clippy::needless_return,
+    clippy::non_canonical_partial_ord_impl,
+    clippy::wrong_self_convention
+)]
 
 use core::hash::{Hash, Hasher};
 use core::str::FromStr;

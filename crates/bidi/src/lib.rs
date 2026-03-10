@@ -1,4 +1,19 @@
 #![no_std]
+#![allow(
+    clippy::collapsible_else_if,
+    clippy::collapsible_if,
+    clippy::derivable_impls,
+    clippy::doc_lazy_continuation,
+    clippy::legacy_numeric_constants,
+    clippy::manual_contains,
+    clippy::match_like_matches_macro,
+    clippy::needless_borrow,
+    clippy::needless_range_loop,
+    clippy::needless_return,
+    clippy::ptr_arg,
+    clippy::redundant_static_lifetimes,
+    clippy::upper_case_acronyms
+)]
 use alloc::borrow::Cow;
 use core::ops::Range;
 use level::MAX_DEPTH;

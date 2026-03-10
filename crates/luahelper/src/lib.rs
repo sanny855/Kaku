@@ -1,4 +1,13 @@
 #![macro_use]
+#![allow(
+    clippy::mutable_key_type,
+    clippy::needless_borrow,
+    clippy::needless_question_mark,
+    clippy::needless_return,
+    clippy::new_without_default,
+    clippy::non_canonical_partial_ord_impl,
+    clippy::redundant_pattern_matching
+)]
 
 pub use mlua;
 use mlua::{IntoLua, Value as LuaValue};

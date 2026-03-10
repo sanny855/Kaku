@@ -1,4 +1,13 @@
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(
+    clippy::comparison_to_empty,
+    clippy::from_over_into,
+    clippy::match_like_matches_macro,
+    clippy::needless_return,
+    clippy::new_without_default,
+    clippy::to_string_trait_impl,
+    clippy::wrong_self_convention
+)]
 
 #[cfg(feature = "serde")]
 use ::serde::*;
@@ -1349,7 +1358,7 @@ impl RawKeyEvent {
             // PrintScreen => 57361,
             // Pause => 57362,
             // Menu => 57363,
-            Function(n) if n >= 13 && n <= 35 => 57376 + n as u32 - 13,
+            Function(n) if (13..=35).contains(&n) => 57376 + n as u32 - 13,
             Numpad(n) => n as u32 + 57399,
             Decimal => 57409,
             Divide => 57410,
