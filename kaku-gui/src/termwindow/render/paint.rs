@@ -310,31 +310,31 @@ impl crate::TermWindow {
                 };
                 let (_, padding_bottom) = self.effective_vertical_padding();
                 let padding_bottom = padding_bottom as f32;
-                let top_fill_height = border.top.get() as f32
-                    + if self.config.tab_bar_at_bottom {
-                        0.0
-                    } else {
-                        tab_bar_height
-                    };
-                let bottom_fill_height = padding_bottom
-                    + border.bottom.get() as f32
-                    + if self.config.tab_bar_at_bottom {
-                        tab_bar_height
-                    } else {
-                        0.0
-                    };
+                // Only cover the OS border area; the tab bar paints its own
+                // transparent background in paint_tab_bar(), so including
+                // tab_bar_height here would double-paint that region.
+                // When tab bar is at top, it starts at y=0 and covers the
+                // titlebar area completely, so no top fill needed.
+                let top_fill_height = if self.show_tab_bar && !self.config.tab_bar_at_bottom {
+                    0.0
+                } else {
+                    border.top.get() as f32
+                };
+                // Same reasoning as top: only cover the OS border + padding.
+                // The tab bar paints its own transparent background.
+                // When tab bar is at bottom, it covers the bottom border area,
+                // so only fill the padding area.
+                let bottom_fill_height = if self.show_tab_bar && self.config.tab_bar_at_bottom {
+                    padding_bottom
+                } else {
+                    padding_bottom + border.bottom.get() as f32
+                };
                 let right_fill_width =
                     self.effective_right_padding(&self.config) as f32 + border.right.get() as f32;
-                let left_fill_width =
-                    self.config
-                        .window_padding
-                        .left
-                        .evaluate_as_pixels(DimensionContext {
-                            dpi: self.dimensions.dpi as f32,
-                            pixel_max: self.terminal_size.pixel_width as f32,
-                            pixel_cell: self.render_metrics.cell_size.width as f32,
-                        })
-                        + border.left.get() as f32;
+                // Use content_left_inset() to include content-alignment gap;
+                // the leftmost pane background will start at this boundary so
+                // the two regions don't overlap.
+                let left_fill_width = self.content_left_inset();
                 let window_width = self.dimensions.pixel_width as f32;
                 let window_height = self.dimensions.pixel_height as f32;
 
@@ -364,20 +364,41 @@ impl crate::TermWindow {
                     .context("filled_rectangle for transparent bottom strip")?;
                 }
 
+                // The tab bar paints its own full-width background, so the
+                // left/right side strips must skip the tab bar region to avoid
+                // double-painting.
+                let tab_bar_top_height = if self.show_tab_bar && !self.config.tab_bar_at_bottom {
+                    tab_bar_height
+                } else {
+                    0.0
+                };
+                let tab_bar_bottom_height = if self.show_tab_bar && self.config.tab_bar_at_bottom {
+                    tab_bar_height
+                } else {
+                    0.0
+                };
+                let side_fill_y = (top_fill_height + tab_bar_top_height).min(window_height);
+                // When tab bar is at bottom, side fills should extend to tab bar top,
+                // not to (bottom_fill_height + tab_bar_height) which would leave a gap.
+                let side_fill_height = if self.show_tab_bar && self.config.tab_bar_at_bottom {
+                    (window_height - side_fill_y - tab_bar_height).max(0.0)
+                } else {
+                    (window_height
+                        - side_fill_y
+                        - (bottom_fill_height + tab_bar_bottom_height).min(window_height))
+                    .max(0.0)
+                };
+
                 if right_fill_width > 0.0 {
                     let clamped_width = right_fill_width.min(window_width);
-                    let right_fill_y = top_fill_height.min(window_height);
-                    let right_fill_height =
-                        (window_height - right_fill_y - bottom_fill_height.min(window_height))
-                            .max(0.0);
                     self.filled_rectangle(
                         &mut layers,
                         0,
                         euclid::rect(
                             window_width - clamped_width,
-                            right_fill_y,
+                            side_fill_y,
                             clamped_width,
-                            right_fill_height,
+                            side_fill_height,
                         ),
                         strip_background,
                     )
@@ -386,14 +407,10 @@ impl crate::TermWindow {
 
                 if left_fill_width > 0.0 {
                     let clamped_width = left_fill_width.min(window_width);
-                    let left_fill_y = top_fill_height.min(window_height);
-                    let left_fill_height =
-                        (window_height - left_fill_y - bottom_fill_height.min(window_height))
-                            .max(0.0);
                     self.filled_rectangle(
                         &mut layers,
                         0,
-                        euclid::rect(0.0, left_fill_y, clamped_width, left_fill_height),
+                        euclid::rect(0.0, side_fill_y, clamped_width, side_fill_height),
                         strip_background,
                     )
                     .context("filled_rectangle for transparent left strip")?;

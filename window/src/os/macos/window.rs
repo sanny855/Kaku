@@ -1079,6 +1079,7 @@ impl Window {
                 },
                 window_state: WindowState::default(),
                 live_resizing: false,
+                screen_changed: false,
             });
 
             Ok(window_handle)
@@ -1657,9 +1658,19 @@ impl WindowInner {
                         self.config.macos_fullscreen_extend_behind_notch,
                     );
 
-                    self.window.setOpaque_(YES);
-                    let black: id = msg_send![class!(NSColor), blackColor];
-                    let _: () = msg_send![*self.window, setBackgroundColor: black];
+                    // Respect window_background_opacity in fullscreen mode
+                    let opaque = if self.config.window_background_opacity >= 1.0 {
+                        YES
+                    } else {
+                        NO
+                    };
+                    self.window.setOpaque_(opaque);
+                    let bg_color: id = if self.config.window_background_opacity >= 1.0 {
+                        msg_send![class!(NSColor), blackColor]
+                    } else {
+                        msg_send![class!(NSColor), clearColor]
+                    };
+                    let _: () = msg_send![*self.window, setBackgroundColor: bg_color];
                     self.window
                         .setStyleMask_(NSWindowStyleMask::NSBorderlessWindowMask);
                     self.window.setHasShadow_(NO);
@@ -1717,22 +1728,22 @@ impl WindowInner {
             return;
         }
 
-        // Set the titlebar background to the theme color falling back to black if there is no
-        // specified color scheme
-        let mut color = self
-            .config
-            .resolved_palette
-            .background
-            .unwrap_or(RgbaColor::from(SrgbaTuple(0., 0., 0., 1.0)));
-        if self.config.window_background_opacity < 1.0 {
-            let SrgbaTuple(r, g, b, a) = *color;
-            color = RgbaColor::from(SrgbaTuple(
-                r,
-                g,
-                b,
-                (a * self.config.window_background_opacity).clamp(0.0, 1.0),
-            ));
-        }
+        // When the window is transparent and uses integrated buttons, our Metal
+        // rendering already paints a semi-transparent fill strip in the titlebar
+        // area.  Setting the NSTitlebarContainerView layer to a non-clear color
+        // would double-composite on top of that strip, making the titlebar region
+        // appear more opaque than the rest of the window.  Use a fully clear
+        // background so that only the Metal layer contributes.
+        let color = if self.config.window_background_opacity < 1.0 {
+            RgbaColor::from(SrgbaTuple(0., 0., 0., 0.))
+        } else {
+            // Set the titlebar background to the theme color falling back to
+            // black if there is no specified color scheme.
+            self.config
+                .resolved_palette
+                .background
+                .unwrap_or(RgbaColor::from(SrgbaTuple(0., 0., 0., 1.0)))
+        };
 
         unsafe {
             if let Some(titlebar_view_container) = get_titlebar_view_container(&self.window) {
@@ -2150,6 +2161,9 @@ fn apply_decorations_to_window(
             || decorations.contains(WindowDecorations::MACOS_USE_BACKGROUND_COLOR_AS_TITLEBAR_COLOR)
         {
             window.setTitlebarAppearsTransparent_(YES);
+            // NSTitlebarSeparatorStyleNone = 1; removes the 1px separator
+            // line that macOS draws at the bottom of the titlebar area.
+            let _: () = msg_send![**window, setTitlebarSeparatorStyle: 1i64];
         } else {
             window.setTitlebarAppearsTransparent_(hidden);
         }
@@ -4582,6 +4596,7 @@ impl WindowView {
             };
 
             let live_resizing = inner.live_resizing;
+            let screen_changed = std::mem::take(&mut inner.screen_changed);
 
             // Note: isZoomed can falsely return YES in situations such as
             // the current screen changing. We cannot detect that case here.
@@ -4700,6 +4715,7 @@ impl WindowView {
                     },
                     window_state,
                     live_resizing,
+                    screen_changed,
                 });
             }
 
@@ -4819,7 +4835,6 @@ impl WindowView {
                 // with different dpi), then we treat this as a resize
                 // event that will in turn trigger an invalidation
                 // and a repaint.
-                inner.screen_changed = false;
                 drop(inner);
                 Self::did_resize(view, sel, nil);
                 return;

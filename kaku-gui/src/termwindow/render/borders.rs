@@ -2,6 +2,7 @@ use crate::quad::TripleLayerQuadAllocator;
 use crate::utilsprites::RenderMetrics;
 use ::window::ULength;
 use config::{ConfigHandle, DimensionContext};
+use window::color::LinearRgba;
 
 const INTEGRATED_BUTTONS_TOP_INSET: usize = 16;
 
@@ -41,76 +42,62 @@ impl crate::TermWindow {
             let height = self.dimensions.pixel_height as f32;
             let width = self.dimensions.pixel_width as f32;
 
+            // In fullscreen, use palette background color for all borders.
+            // In windowed mode, use configured border colors if available.
+            let border_color = |default: LinearRgba| -> LinearRgba {
+                if is_fullscreen {
+                    fullscreen_border_color
+                } else {
+                    default
+                }
+            };
+
             let border_top = border_dimensions.top.get() as f32;
             if border_top > 0.0 {
-                self.filled_rectangle(
-                    layers,
-                    1,
-                    euclid::rect(0.0, 0.0, width, border_top),
-                    if is_fullscreen {
-                        fullscreen_border_color
-                    } else {
-                        self.config
-                            .window_frame
-                            .border_top_color
-                            .map(|c| c.to_linear())
-                            .unwrap_or(border_dimensions.color)
-                    },
-                )?;
+                let color = border_color(
+                    self.config
+                        .window_frame
+                        .border_top_color
+                        .map(|c| c.to_linear())
+                        .unwrap_or(border_dimensions.color)
+                );
+                self.filled_rectangle(layers, 1, euclid::rect(0.0, 0.0, width, border_top), color)?;
             }
 
             let border_left = border_dimensions.left.get() as f32;
             if border_left > 0.0 {
-                self.filled_rectangle(
-                    layers,
-                    1,
-                    euclid::rect(0.0, 0.0, border_left, height),
-                    if is_fullscreen {
-                        fullscreen_border_color
-                    } else {
-                        self.config
-                            .window_frame
-                            .border_left_color
-                            .map(|c| c.to_linear())
-                            .unwrap_or(border_dimensions.color)
-                    },
-                )?;
+                let color = border_color(
+                    self.config
+                        .window_frame
+                        .border_left_color
+                        .map(|c| c.to_linear())
+                        .unwrap_or(border_dimensions.color)
+                );
+                self.filled_rectangle(layers, 1, euclid::rect(0.0, 0.0, border_left, height), color)?;
             }
 
             let border_bottom = border_dimensions.bottom.get() as f32;
             if border_bottom > 0.0 {
-                self.filled_rectangle(
-                    layers,
-                    1,
-                    euclid::rect(0.0, height - border_bottom, width, height),
-                    if is_fullscreen {
-                        fullscreen_border_color
-                    } else {
-                        self.config
-                            .window_frame
-                            .border_bottom_color
-                            .map(|c| c.to_linear())
-                            .unwrap_or(border_dimensions.color)
-                    },
-                )?;
+                let color = border_color(
+                    self.config
+                        .window_frame
+                        .border_bottom_color
+                        .map(|c| c.to_linear())
+                        .unwrap_or(border_dimensions.color)
+                );
+                self.filled_rectangle(layers, 1, euclid::rect(0.0, height - border_bottom, width, height), color)?;
             }
 
             let border_right = border_dimensions.right.get() as f32;
             if border_right > 0.0 {
-                self.filled_rectangle(
-                    layers,
-                    1,
-                    euclid::rect(width - border_right, 0.0, border_right, height),
-                    if is_fullscreen {
-                        fullscreen_border_color
-                    } else {
-                        self.config
-                            .window_frame
-                            .border_right_color
-                            .map(|c| c.to_linear())
-                            .unwrap_or(border_dimensions.color)
-                    },
-                )?;
+                let color = border_color(
+                    self.config
+                        .window_frame
+                        .border_right_color
+                        .map(|c| c.to_linear())
+                        .unwrap_or(border_dimensions.color)
+                );
+                self.filled_rectangle(layers, 1, euclid::rect(width - border_right, 0.0, border_right, height), color)?;
             }
         }
 

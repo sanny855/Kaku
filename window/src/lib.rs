@@ -180,6 +180,9 @@ pub enum WindowEvent {
         dimensions: Dimensions,
         window_state: WindowState,
         live_resizing: bool,
+        /// True when this resize was triggered by the window moving to a
+        /// different display or other per-screen DPI source change.
+        screen_changed: bool,
     },
 
     /// Called when a program-requested set_inner_size() has finished

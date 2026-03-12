@@ -1612,8 +1612,15 @@ impl TermWindow {
                 dimensions,
                 window_state,
                 live_resizing,
+                screen_changed,
             } => {
-                self.resize(dimensions, window_state, window, live_resizing);
+                self.resize(
+                    dimensions,
+                    window_state,
+                    window,
+                    live_resizing,
+                    screen_changed,
+                );
                 Ok(true)
             }
             WindowEvent::SetInnerSizeCompleted => {

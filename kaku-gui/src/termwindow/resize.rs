@@ -59,6 +59,14 @@ fn rebalance_top_padding_for_bottom_gap(
     (padding_top.saturating_add(shift), shift)
 }
 
+fn should_preserve_terminal_cells_on_scale_change(
+    font_scale_changed: bool,
+    simple_dpi_change: bool,
+    allow_terminal_size_preservation: bool,
+) -> bool {
+    font_scale_changed || (simple_dpi_change && allow_terminal_size_preservation)
+}
+
 impl super::TermWindow {
     pub fn resize(
         &mut self,
@@ -66,10 +74,12 @@ impl super::TermWindow {
         window_state: WindowState,
         window: &Window,
         live_resizing: bool,
+        screen_changed: bool,
     ) {
         log::trace!(
-            "resize event, live={} current cells: {:?}, current dims: {:?}, new dims: {:?} window_state:{:?}",
+            "resize event, live={} screen_changed={} current cells: {:?}, current dims: {:?}, new dims: {:?} window_state:{:?}",
             live_resizing,
+            screen_changed,
             self.current_cell_dimensions(),
             self.dimensions,
             dimensions,
@@ -145,7 +155,12 @@ impl super::TermWindow {
             // skip our scaling recalculation.
             self.apply_dimensions(&dimensions, None, window);
         } else {
-            self.scaling_changed(dimensions, self.fonts.get_font_scale(), window);
+            self.scaling_changed(
+                dimensions,
+                self.fonts.get_font_scale(),
+                window,
+                !screen_changed,
+            );
         }
         if let Some(modal) = self.get_modal() {
             modal.reconfigure(self);
@@ -470,7 +485,13 @@ impl super::TermWindow {
     }
 
     #[allow(clippy::float_cmp)]
-    pub fn scaling_changed(&mut self, dimensions: Dimensions, font_scale: f64, window: &Window) {
+    pub fn scaling_changed(
+        &mut self,
+        dimensions: Dimensions,
+        font_scale: f64,
+        window: &Window,
+        allow_terminal_size_preservation: bool,
+    ) {
         fn dpi_adjusted(n: usize, dpi: usize) -> f32 {
             n as f32 / dpi as f32
         }
@@ -533,15 +554,22 @@ impl super::TermWindow {
             self.apply_scale_change(&dimensions, font_scale);
         }
 
-        let scale_changed_cells = if font_scale_changed || simple_dpi_change {
+        let preserve_terminal_cells = should_preserve_terminal_cells_on_scale_change(
+            font_scale_changed,
+            simple_dpi_change,
+            allow_terminal_size_preservation,
+        );
+
+        let scale_changed_cells = if preserve_terminal_cells {
             Some(cell_dims)
         } else {
             None
         };
 
         log::trace!(
-            "scaling_changed, follow with applying dimensions. scale_changed_cells={:?}",
-            scale_changed_cells
+            "scaling_changed, follow with applying dimensions. allow_terminal_size_preservation={} scale_changed_cells={:?}",
+            allow_terminal_size_preservation,
+            scale_changed_cells,
         );
         self.apply_dimensions(&dimensions, scale_changed_cells, window);
     }
@@ -564,7 +592,7 @@ impl super::TermWindow {
             };
 
         if self.window_state.can_resize() && adjust_window_size_when_changing_font_size {
-            self.scaling_changed(self.dimensions, font_scale, window);
+            self.scaling_changed(self.dimensions, font_scale, window, true);
         } else {
             let dimensions = self.dimensions;
             // Compute new font metrics
@@ -954,6 +982,7 @@ mod tests {
     use super::{
         effective_top_padding, effective_vertical_padding_with_policy,
         rebalance_top_padding_for_bottom_gap, should_normalize_fullscreen_state_on_resize,
+        should_preserve_terminal_cells_on_scale_change,
         should_rebalance_top_tab_visible_bottom_gap, user_custom_window_padding_config_path,
     };
     use config::{Config, ConfigHandle, DimensionContext};
@@ -1315,6 +1344,19 @@ mod tests {
         ));
         assert!(!should_rebalance_top_tab_visible_bottom_gap(
             false, true, true
+        ));
+    }
+
+    #[test]
+    fn screen_change_disables_terminal_size_preservation_for_simple_dpi_change() {
+        assert!(!should_preserve_terminal_cells_on_scale_change(
+            false, true, false
+        ));
+        assert!(should_preserve_terminal_cells_on_scale_change(
+            false, true, true
+        ));
+        assert!(should_preserve_terminal_cells_on_scale_change(
+            true, false, false
         ));
     }
 }

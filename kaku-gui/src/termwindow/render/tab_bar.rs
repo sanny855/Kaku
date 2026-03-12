@@ -8,6 +8,19 @@ use window::color::LinearRgba;
 
 impl crate::TermWindow {
     pub fn paint_tab_bar(&mut self, layers: &mut TripleLayerQuadAllocator) -> anyhow::Result<()> {
+        let _border = self.get_os_border();
+        let tab_bar_height = self.tab_bar_pixel_height()?;
+        let tab_bar_y = if self.config.tab_bar_at_bottom {
+            // Position tab bar at the very bottom for a "flush" appearance.
+            // The tab bar renders its own background, covering the bottom area.
+            ((self.dimensions.pixel_height as f32) - tab_bar_height).max(0.)
+        } else {
+            // Position tab bar at the very top (y=0) for a "flush" appearance.
+            // The fancy tab bar renders its own background, so it will cover
+            // the titlebar area completely.
+            0.0
+        };
+
         if self.config.use_fancy_tab_bar {
             if self.fancy_tab_bar.is_none() {
                 let palette = self.palette().clone();
@@ -15,20 +28,41 @@ impl crate::TermWindow {
                 self.fancy_tab_bar.replace(tab_bar);
             }
 
+            // In transparent mode, fill the tab bar area with a transparent
+            // background so it blends consistently with the window.
+            let window_is_transparent =
+                !self.window_background.is_empty() || self.config.window_background_opacity != 1.0;
+            if window_is_transparent {
+                let tab_bar_bg = if let Some(active) = self.get_active_pane_or_overlay() {
+                    active
+                        .palette()
+                        .background
+                        .to_linear()
+                        .mul_alpha(self.config.window_background_opacity)
+                } else {
+                    self.palette()
+                        .background
+                        .to_linear()
+                        .mul_alpha(self.config.window_background_opacity)
+                };
+                self.filled_rectangle(
+                    layers,
+                    0,
+                    euclid::rect(
+                        0.0,
+                        tab_bar_y,
+                        self.dimensions.pixel_width as f32,
+                        tab_bar_height,
+                    ),
+                    tab_bar_bg,
+                )?;
+            }
+
             self.ui_items.append(&mut self.paint_fancy_tab_bar()?);
             return Ok(());
         }
 
-        let border = self.get_os_border();
-
         let palette = self.palette().clone();
-        let tab_bar_height = self.tab_bar_pixel_height()?;
-        let tab_bar_y = if self.config.tab_bar_at_bottom {
-            ((self.dimensions.pixel_height as f32) - (tab_bar_height + border.bottom.get() as f32))
-                .max(0.)
-        } else {
-            border.top.get() as f32
-        };
 
         // Register the tab bar location
         self.ui_items.append(&mut self.tab_bar.compute_ui_items(

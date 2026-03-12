@@ -189,13 +189,20 @@ impl crate::TermWindow {
         } else {
             0.
         };
-        let (top_bar_height, bottom_bar_height) = if self.config.tab_bar_at_bottom {
-            (0.0, tab_bar_height)
+        let top_bar_height = if self.config.tab_bar_at_bottom {
+            0.0
         } else {
-            (tab_bar_height, 0.0)
+            tab_bar_height
         };
         let border = self.get_os_border();
-        let top_pixel_y = top_bar_height + padding_top + border.top.get() as f32;
+        // When tab bar is at top, it covers the titlebar area, so don't add
+        // border.top which includes the integrated buttons inset.
+        let effective_border_top = if self.show_tab_bar && !self.config.tab_bar_at_bottom {
+            0.0
+        } else {
+            border.top.get() as f32
+        };
+        let top_pixel_y = top_bar_height + padding_top + effective_border_top;
 
         let cursor = pos.pane.get_cursor_position();
         if pos.is_active {
@@ -233,9 +240,19 @@ impl crate::TermWindow {
         let split_col_gutter = (1 + 2 * gap).max(1) as f32;
         let split_row_gutter = gap.max(1) as f32;
         let background_rect = {
-            // We want to fill out to the edges of the splits
+            // We want to fill out to the edges of the splits.
+            // When transparent fill strips are active (no window background
+            // image, opacity < 1.0), the left padding area is already covered
+            // by the fill strip in paint_pass().  Starting the pane bg at x=0
+            // would double-paint that region, making it appear more opaque.
+            let transparent_fill_strips_active =
+                self.window_background.is_empty() && window_is_transparent;
             let (x, width_delta) = if pos.left == 0 {
-                (0., content_left + (cell_width * split_col_gutter / 2.0))
+                if transparent_fill_strips_active {
+                    (content_left, cell_width * split_col_gutter / 2.0)
+                } else {
+                    (0., content_left + (cell_width * split_col_gutter / 2.0))
+                }
             } else {
                 (
                     content_left - (cell_width * split_col_gutter / 2.0)
@@ -269,12 +286,19 @@ impl crate::TermWindow {
             // Calculate the height - respect bottom padding
             let height = if pos.top + pos.height >= self.terminal_size.rows as usize {
                 // Bottom-most pane: extend to split center but respect window padding.
+                // effective_vertical_padding already accounts for bottom tab bar height
+                // (it subtracts tab_bar_height from bottom padding), so we should not
+                // subtract bottom_bar_height again here to avoid a gap.
+                // When tab bar is at bottom, it covers the bottom border area, so
+                // don't subtract border.bottom which would create a gap.
                 let padding_bottom = effective_padding_bottom;
-                self.dimensions.pixel_height as f32
-                    - y
-                    - padding_bottom
-                    - bottom_bar_height
-                    - border.bottom.get() as f32
+                let effective_border_bottom = if self.show_tab_bar && self.config.tab_bar_at_bottom
+                {
+                    0.0
+                } else {
+                    border.bottom.get() as f32
+                };
+                self.dimensions.pixel_height as f32 - y - padding_bottom - effective_border_bottom
             } else {
                 (pos.height as f32 * cell_height) + height_delta as f32
             };
