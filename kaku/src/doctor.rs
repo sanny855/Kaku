@@ -925,6 +925,24 @@ mod tests {
     }
 
     #[test]
+    fn term_program_guard_is_detected_as_legacy_source_line() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join(".zshrc");
+        fs::write(
+            &path,
+            r#"[[ "$TERM_PROGRAM" == "Kaku" ]] && [[ -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh" # Kaku Shell Integration
+"#,
+        )
+        .expect("write zshrc");
+
+        let check = check_zshrc_source_line(&path);
+        assert_eq!(check.guarded_active_lines, 1);
+        assert_eq!(check.unguarded_active_lines, 0);
+        assert!(check.has_legacy_guarded_lines());
+        assert!(check.has_active_lines());
+    }
+
+    #[test]
     fn escaped_absolute_path_source_line_is_marked_malformed() {
         let dir = tempfile::tempdir().expect("create tempdir");
         let path = dir.path().join(".zshrc");

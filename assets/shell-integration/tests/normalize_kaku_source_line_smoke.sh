@@ -159,6 +159,13 @@ run_normalize \
 
 run_normalize \
   normalize_kaku_source_line_file \
+  $'[[ "$TERM_PROGRAM" == "Kaku" ]] && [[ -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh" # Kaku Shell Integration\n' \
+  0 \
+  "$SOURCE_LINE"$'\n' \
+  "term_program guarded line is normalized"
+
+run_normalize \
+  normalize_kaku_source_line_file \
   $'# [[ -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh"\n'"$SOURCE_LINE"$'\n'"$SOURCE_LINE"$'\n' \
   2 \
   $'# [[ -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh"\n'"$SOURCE_LINE"$'\n' \
