@@ -110,6 +110,16 @@ jobs:
       - name: Check key crates
         run: cargo check --locked -p kaku -p kaku-gui
 
+  release-notes-check:
+    name: Release Notes Check
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Check RELEASE_NOTES.md version
+        run: ./scripts/check_release_notes.sh
+
   universal-build:
     name: Universal Build Validation
     runs-on: macos-latest

@@ -168,6 +168,25 @@ jobs:
           echo "Verifying notarization status..."
           spctl -a -vv dist/Kaku.app
 
+      - name: Validate and extract release notes
+        if: github.ref_type == 'tag'
+        id: release_notes
+        env:
+          VERSION: ${{ steps.release_meta.outputs.version }}
+        run: |
+          ./scripts/check_release_notes.sh
+          # Read release notes (skip title line)
+          notes=$(tail -n +2 .github/RELEASE_NOTES.md)
+          if [[ -z "$notes" ]] || [[ "$notes" == *"TODO"* ]]; then
+            echo "RELEASE_NOTES.md is empty or contains TODO" >&2
+            exit 1
+          fi
+          # Escape for GitHub Actions output
+          delimiter="EOF-$(openssl rand -hex 8)"
+          echo "body<<$delimiter" >> "$GITHUB_OUTPUT"
+          echo "$notes" >> "$GITHUB_OUTPUT"
+          echo "$delimiter" >> "$GITHUB_OUTPUT"
+
       - name: Upload to Release
         if: github.ref_type == 'tag'
         uses: ncipollo/release-action@b7eabc95ff50cbeeedec83973935c8f306dfcd0b # v1
@@ -175,7 +194,7 @@ jobs:
           allowUpdates: true
           artifacts: "dist/*.dmg,dist/kaku_for_update.zip,dist/kaku_for_update.zip.sha256"
           token: ${{ secrets.GITHUB_TOKEN }}
-          generateReleaseNotes: true
+          body: ${{ steps.release_notes.outputs.body }}
 
       - name: Compute release metadata
         id: meta
