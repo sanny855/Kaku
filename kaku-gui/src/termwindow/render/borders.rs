@@ -59,7 +59,7 @@ impl crate::TermWindow {
                         .window_frame
                         .border_top_color
                         .map(|c| c.to_linear())
-                        .unwrap_or(border_dimensions.color)
+                        .unwrap_or(border_dimensions.color),
                 );
                 self.filled_rectangle(layers, 1, euclid::rect(0.0, 0.0, width, border_top), color)?;
             }
@@ -71,9 +71,14 @@ impl crate::TermWindow {
                         .window_frame
                         .border_left_color
                         .map(|c| c.to_linear())
-                        .unwrap_or(border_dimensions.color)
+                        .unwrap_or(border_dimensions.color),
                 );
-                self.filled_rectangle(layers, 1, euclid::rect(0.0, 0.0, border_left, height), color)?;
+                self.filled_rectangle(
+                    layers,
+                    1,
+                    euclid::rect(0.0, 0.0, border_left, height),
+                    color,
+                )?;
             }
 
             let border_bottom = border_dimensions.bottom.get() as f32;
@@ -83,9 +88,14 @@ impl crate::TermWindow {
                         .window_frame
                         .border_bottom_color
                         .map(|c| c.to_linear())
-                        .unwrap_or(border_dimensions.color)
+                        .unwrap_or(border_dimensions.color),
                 );
-                self.filled_rectangle(layers, 1, euclid::rect(0.0, height - border_bottom, width, height), color)?;
+                self.filled_rectangle(
+                    layers,
+                    1,
+                    euclid::rect(0.0, height - border_bottom, width, height),
+                    color,
+                )?;
             }
 
             let border_right = border_dimensions.right.get() as f32;
@@ -95,9 +105,14 @@ impl crate::TermWindow {
                         .window_frame
                         .border_right_color
                         .map(|c| c.to_linear())
-                        .unwrap_or(border_dimensions.color)
+                        .unwrap_or(border_dimensions.color),
                 );
-                self.filled_rectangle(layers, 1, euclid::rect(width - border_right, 0.0, border_right, height), color)?;
+                self.filled_rectangle(
+                    layers,
+                    1,
+                    euclid::rect(width - border_right, 0.0, border_right, height),
+                    color,
+                )?;
             }
         }
 
