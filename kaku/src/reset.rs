@@ -86,21 +86,14 @@ mod imp {
         }
     }
 
-    #[derive(Clone, Copy, PartialEq)]
-    enum KakuShell {
-        Zsh,
-        Fish,
-    }
-
     pub fn run(yes: bool) -> anyhow::Result<()> {
         confirm_reset(yes)?;
 
         let mut report = ResetReport::default();
-        let active_shell = detect_target_shell();
 
         remove_zsh_integration(&mut report)?;
-        remove_fish_integration(&mut report)?;
         remove_kaku_shell_dir(&mut report)?;
+        remove_fish_integration(&mut report)?;
         remove_tmux_integration(&mut report)?;
         remove_file_if_exists(
             config_home().join("tmux").join("kaku.tmux.conf"),
@@ -138,15 +131,22 @@ mod imp {
 
         report.print();
 
-        println!("\n⚠️  Shell restart required.");
-        println!(
-            "ℹ️  Tools preserved in ~/.config/kaku/{}/\n",
-            if active_shell == KakuShell::Fish {
-                "fish"
-            } else {
-                "zsh"
-            }
-        );
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let is_fish = std::path::Path::new(&shell)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n == "fish")
+            .unwrap_or(false);
+
+        let tools_dir = if is_fish {
+            "~/.config/kaku/fish/"
+        } else {
+            "~/.config/kaku/zsh/"
+        };
+        let restart_cmd = if is_fish { "exec fish -l" } else { "exec zsh -l" };
+
+        println!("\nShell restart required.");
+        println!("Tools preserved in {}\n", tools_dir);
 
         if !yes && io::stdin().is_terminal() {
             print!("Restart shell now? [Y/n] ");
@@ -159,24 +159,15 @@ mod imp {
 
             let answer = input.trim().to_ascii_lowercase();
             if answer.is_empty() || answer == "y" || answer == "yes" {
-                println!("\nRestarting shell... 👋");
+                println!("\nRestarting shell...");
                 println!("Tip: Run 'kaku init' to restore integration");
-                let shell = default_shell_path_for_exec();
                 let err = std::process::Command::new(&shell).arg("-l").exec();
                 bail!("failed to restart shell: {}", err);
             } else {
-                let shell_label = shell_exec_label(active_shell);
-                println!(
-                    "\nRun '{} -l' when ready. Restore with 'kaku init'",
-                    shell_label
-                );
+                println!("\nRun '{}' when ready. Restore with 'kaku init'", restart_cmd);
             }
         } else {
-            let shell_label = shell_exec_label(active_shell);
-            println!(
-                "Run '{} -l' to restart. Restore with 'kaku init'",
-                shell_label
-            );
+            println!("Run '{}' to restart. Restore with 'kaku init'", restart_cmd);
         }
 
         Ok(())
@@ -213,36 +204,6 @@ mod imp {
 
     fn home_dir() -> PathBuf {
         config::HOME_DIR.clone()
-    }
-
-    fn detect_target_shell() -> KakuShell {
-        let shell = std::env::var("KAKU_TARGET_SHELL")
-            .ok()
-            .or_else(|| std::env::var("SHELL").ok())
-            .unwrap_or_else(|| "/bin/zsh".to_string());
-
-        let shell = shell.trim().to_lowercase();
-        let file = Path::new(&shell)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(&shell);
-
-        if file.ends_with("fish") || file == "fish" {
-            KakuShell::Fish
-        } else {
-            KakuShell::Zsh
-        }
-    }
-
-    fn shell_exec_label(shell: KakuShell) -> &'static str {
-        match shell {
-            KakuShell::Fish => "exec fish",
-            KakuShell::Zsh => "exec zsh",
-        }
-    }
-
-    fn default_shell_path_for_exec() -> String {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
     }
 
     fn config_home() -> PathBuf {
@@ -322,7 +283,20 @@ mod imp {
         Ok(())
     }
 
+    fn remove_kaku_shell_dir(report: &mut ResetReport) -> anyhow::Result<()> {
+        let kaku_init = config_home().join("zsh").join("kaku.zsh");
+        if kaku_init.exists() {
+            std::fs::remove_file(&kaku_init)
+                .with_context(|| format!("remove {}", kaku_init.display()))?;
+            report.changed(format!("removed {}", kaku_init.display()));
+        } else {
+            report.skipped(format!("{} not found", kaku_init.display()));
+        }
+        Ok(())
+    }
+
     fn remove_fish_integration(report: &mut ResetReport) -> anyhow::Result<()> {
+        // Remove the conf.d entry point (sourced by fish on startup)
         let conf_d_file = home_dir()
             .join(".config")
             .join("fish")
@@ -334,27 +308,21 @@ mod imp {
             report,
         )?;
 
+        // Remove managed fish init file
         let fish_init = config_home().join("fish").join("kaku.fish");
-        remove_file_if_exists(fish_init, "removed ~/.config/kaku/fish/kaku.fish", report)?;
+        remove_file_if_exists(
+            fish_init,
+            "removed ~/.config/kaku/fish/kaku.fish",
+            report,
+        )?;
 
+        // Remove fish wrapper bin
         let fish_wrapper = config_home().join("fish").join("bin").join("kaku");
         remove_file_if_exists(
             fish_wrapper,
             "removed ~/.config/kaku/fish/bin/kaku wrapper",
             report,
         )?;
-        Ok(())
-    }
-
-    fn remove_kaku_shell_dir(report: &mut ResetReport) -> anyhow::Result<()> {
-        let kaku_init = config_home().join("zsh").join("kaku.zsh");
-        if kaku_init.exists() {
-            std::fs::remove_file(&kaku_init)
-                .with_context(|| format!("remove {}", kaku_init.display()))?;
-            report.changed(format!("removed {}", kaku_init.display()));
-        } else {
-            report.skipped(format!("{} not found", kaku_init.display()));
-        }
 
         Ok(())
     }
