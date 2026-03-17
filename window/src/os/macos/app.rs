@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::ffi::c_void;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -139,6 +139,17 @@ const OPEN_UNTITLED_AFTER_SERVICE_OPEN_GUARD: Duration = Duration::from_secs(2);
 const DISPLAY_CHANGE_RETRY_DELAY: Duration = Duration::from_millis(100);
 const DISPLAY_CHANGE_MAX_RETRIES: usize = 5;
 static OPEN_UNTITLED_SPAWN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Set to `true` when the system is about to sleep (`NSWorkspaceWillSleepNotification`).
+/// Cleared when `NSWorkspaceScreensDidWakeNotification` fires and the display-change
+/// defer is armed. Checked by `should_defer_flush_buffer` to prevent flushing a stale
+/// OpenGL surface during the gap between SkyLight's low-level wake callback and the
+/// higher-level workspace notification.
+static SYSTEM_SLEEPING: AtomicBool = AtomicBool::new(false);
+
+pub fn is_system_sleeping() -> bool {
+    SYSTEM_SLEEPING.load(Ordering::Acquire)
+}
 
 fn note_service_open_request() {
     *LAST_SERVICE_OPEN_REQUEST.lock().unwrap() = Some(Instant::now());
@@ -628,6 +639,18 @@ extern "C" fn application_did_finish_launching(this: &mut Object, _sel: Sel, _no
         ];
         log::debug!("registered for NSWorkspaceScreensDidWakeNotification");
 
+        // Register for will-sleep so we can block flushBuffer before the
+        // surface is invalidated. The low-level SkyLight displayStatus callback
+        // can trigger a paint between sleep and the ScreensDidWake notification.
+        let will_sleep_name = nsstring("NSWorkspaceWillSleepNotification");
+        let () = msg_send![notification_center,
+            addObserver: this as *mut Object
+            selector: sel!(workspaceWillSleep:)
+            name: *will_sleep_name
+            object: nil
+        ];
+        log::debug!("registered for NSWorkspaceWillSleepNotification");
+
         // Register for display topology changes (monitor connect/disconnect,
         // resolution updates) and refresh all window backends the same way.
         let app_notification_center: id = msg_send![class!(NSNotificationCenter), defaultCenter];
@@ -687,10 +710,22 @@ fn refresh_all_window_contexts_after_display_change(
     }
 }
 
+/// Called when the system is about to sleep. Sets the SYSTEM_SLEEPING flag so
+/// that `should_defer_flush_buffer` blocks flushBuffer before the GPU surface
+/// is torn down.
+extern "C" fn workspace_will_sleep(_self: &mut Object, _sel: Sel, _notification: *mut Object) {
+    log::debug!("NSWorkspaceWillSleepNotification received, blocking OpenGL flushBuffer");
+    SYSTEM_SLEEPING.store(true, Ordering::Release);
+}
+
 /// Called when the system wakes from sleep. Updates all OpenGL contexts to
 /// prevent crashes from stale surfaces when AppKit tries to flush the backing layer.
 extern "C" fn screens_did_wake(_self: &mut Object, _sel: Sel, _notification: *mut Object) {
     log::debug!("NSWorkspaceScreensDidWakeNotification received, updating OpenGL contexts");
+    // Clear the sleep flag. The display-change defer armed by
+    // refresh_all_window_contexts_after_display_change will keep flushBuffer
+    // blocked for an additional period while the surface rebuilds.
+    SYSTEM_SLEEPING.store(false, Ordering::Release);
     refresh_all_window_contexts_after_display_change("system wake", DISPLAY_CHANGE_MAX_RETRIES);
 }
 
@@ -1197,6 +1232,10 @@ fn get_class() -> &'static Class {
                 sel!(openInKakuWindowService:userData:error:),
                 open_in_kaku_window_service
                     as extern "C" fn(&mut Object, Sel, *mut Object, *mut Object, *mut Object),
+            );
+            cls.add_method(
+                sel!(workspaceWillSleep:),
+                workspace_will_sleep as extern "C" fn(&mut Object, Sel, *mut Object),
             );
             cls.add_method(
                 sel!(screensDidWake:),

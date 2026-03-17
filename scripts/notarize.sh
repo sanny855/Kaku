@@ -39,7 +39,7 @@ require_developer_id_signature() {
 	local metadata
 	local signed_team_id
 
-	metadata=$(codesign -dv "$APP_BUNDLE" 2>&1) || {
+	metadata=$(codesign -dvvvv "$APP_BUNDLE" 2>&1) || {
 		echo "Error: failed to inspect app signature." >&2
 		return 1
 	}

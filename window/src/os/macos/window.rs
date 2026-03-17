@@ -344,6 +344,10 @@ mod cglbits {
         }
 
         fn should_defer_flush_buffer(&self, view: id, window: id) -> bool {
+            if crate::os::macos::app::is_system_sleeping() {
+                log::trace!("skip flushBuffer: system is sleeping/waking");
+                return true;
+            }
             unsafe {
                 let screen: id = msg_send![window, screen];
                 if screen.is_null() {
