@@ -1,5 +1,7 @@
 mod macos;
 
+use std::sync::Mutex;
+
 #[derive(Debug, Clone)]
 pub struct ToastNotification {
     pub title: String,
@@ -42,3 +44,18 @@ pub fn persistent_toast_notification(title: &str, message: &str) {
 
 #[cfg(target_os = "macos")]
 pub use macos::initialize as macos_initialize;
+
+static UPDATE_CALLBACK: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
+
+pub fn set_update_click_callback<F: Fn() + Send + 'static>(callback: F) {
+    *UPDATE_CALLBACK.lock().unwrap() = Some(Box::new(callback));
+}
+
+pub(crate) fn invoke_update_callback() -> bool {
+    if let Some(cb) = UPDATE_CALLBACK.lock().unwrap().as_ref() {
+        cb();
+        true
+    } else {
+        false
+    }
+}

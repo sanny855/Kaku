@@ -1,7 +1,7 @@
+use crate::TermWindow;
 use crate::scripting::guiwin::GuiWin;
 use crate::spawn::SpawnWhere;
 use crate::termwindow::TermWindowNotif;
-use crate::TermWindow;
 use ::window::*;
 use anyhow::{Context, Error};
 use config::keyassignment::{KeyAssignment, SpawnCommand, SpawnTabDomain};
@@ -14,6 +14,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use wezterm_term::{Alert, ClipboardSelection};
 use wezterm_toast_notification::*;
@@ -156,13 +157,22 @@ pub fn open_kaku_config() {
 }
 
 pub fn run_kaku_update_from_menu() {
-    // Run through the user's shell so rc-initialized env is available.
-    // This keeps menu-triggered update behavior consistent with typing
-    // `kaku update` in a normal shell tab.
-    run_kaku_subcommand_in_shell_new_window("update");
+    static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
+    if UPDATE_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        log::info!("run_kaku_update_from_menu: update already running, ignoring");
+        return;
+    }
+    run_kaku_subcommand_in_new_tab("update", Some(&UPDATE_RUNNING));
 }
 
-fn run_kaku_subcommand_in_shell_new_window(subcommand: &str) {
+pub fn run_kaku_doctor_in_new_tab() {
+    run_kaku_subcommand_in_new_tab("doctor", None);
+}
+
+fn run_kaku_subcommand_in_new_tab(subcommand: &str, running_flag: Option<&'static AtomicBool>) {
     let subcommand = subcommand.to_string();
     let kaku_bin = kaku_cli_program_for_spawn();
     let fallback_bin = shlex::try_quote(&kaku_bin)
@@ -174,10 +184,9 @@ fn run_kaku_subcommand_in_shell_new_window(subcommand: &str) {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    // Use fallback_bin (absolute path) directly so we don't need a login shell
-    // to resolve PATH. The login shell (-l) was the main source of slowness here:
-    // it loads the user's full profile (zshrc, nvm, rbenv, plugins, etc.) before
-    // the update even starts. Since we have an absolute path, skip -l entirely.
+    // Use -ic (interactive) so the shell sources rc files (where proxy env vars
+    // like http_proxy/ALL_PROXY are typically set), but skip -l (login) which
+    // loads the full profile and is much slower.
     let command_str = if shell_name == "fish" {
         format!(
             "{fallback_bin} {subcommand}; printf '\\nPress Enter to close...\\n'; read -l dummy"
@@ -185,6 +194,8 @@ fn run_kaku_subcommand_in_shell_new_window(subcommand: &str) {
     } else {
         format!("{fallback_bin} {subcommand}; printf '\\nPress Enter to close...\\n'; read dummy")
     };
+
+    let flag = running_flag.map(|f| f as *const AtomicBool as usize);
 
     promise::spawn::spawn_into_main_thread(async move {
         use crate::spawn::SpawnWhere;
@@ -196,19 +207,29 @@ fn run_kaku_subcommand_in_shell_new_window(subcommand: &str) {
         let size = config.initial_size(dpi as u32, None);
         let term_config = Arc::new(config::TermConfig::with_config(config));
 
+        // Find an existing window to add the tab to, so we don't spawn
+        // a separate window that lacks the user's proxy environment.
+        let src_window_id =
+            try_front_end().and_then(|fe| fe.gui_windows().first().map(|w| w.mux_window_id));
+
         let spawn_cmd = SpawnCommand {
             domain: SpawnTabDomain::DomainName("local".to_string()),
-            args: Some(vec![shell, "-c".to_string(), command_str]),
+            args: Some(vec![shell, "-ic".to_string(), command_str]),
             ..Default::default()
         };
 
         crate::spawn::spawn_command_impl(
             &spawn_cmd,
-            SpawnWhere::NewWindow,
+            SpawnWhere::NewTab,
             size,
-            None,
+            src_window_id,
             term_config,
         );
+
+        if let Some(flag_addr) = flag {
+            let flag_ref = unsafe { &*(flag_addr as *const AtomicBool) };
+            flag_ref.store(false, Ordering::SeqCst);
+        }
     })
     .detach();
 }
@@ -679,6 +700,27 @@ impl GuiFrontEnd {
                         spawn_command(&spawn, SpawnWhere::NewWindow);
                     }
                     _ => {
+                        // Try to forward window-scoped actions (like
+                        // ShowDebugOverlay) to the first available GUI
+                        // window so they open in-place instead of being
+                        // silently dropped.
+                        if let Some(fe) = try_front_end() {
+                            if let Some(gui) = fe.gui_windows().first() {
+                                gui.window
+                                    .notify(TermWindowNotif::Apply(Box::new(move |tw| {
+                                        if let Some(pane) = tw.get_active_pane_or_overlay() {
+                                            if let Err(e) =
+                                                tw.perform_key_assignment(&pane, &action)
+                                            {
+                                                log::error!(
+                                                    "forwarded perform_key_assignment failed: {e:#}"
+                                                );
+                                            }
+                                        }
+                                    })));
+                                return;
+                            }
+                        }
                         log::warn!("unhandled perform: {action:?}");
                     }
                 }

@@ -174,7 +174,7 @@ fn update_checker() {
                     let socks = wezterm_client::discovery::discover_gui_socks();
                     if force_ui || socks.is_empty() || socks.first() == Some(&my_sock) {
                         persistent_toast_notification_with_click_to_open_url(
-                            "Kaku Update Available",
+                            "Update Available",
                             &format!("{} is available. Click to update.", cached_release.tag_name),
                             "kaku://update",
                         );
@@ -239,7 +239,7 @@ fn update_checker() {
                         if force_ui || socks.is_empty() || socks[0] == my_sock {
                             log::info!("update_checker: showing notification");
                             persistent_toast_notification_with_click_to_open_url(
-                                "Kaku Update Available",
+                                "Update Available",
                                 &format!("{} is available. Click to update.", latest.tag_name),
                                 "kaku://update",
                             );
@@ -283,6 +283,12 @@ pub fn start_update_checker() {
         // dialog on first launch, rather than lazily when a notification fires.
         wezterm_toast_notification::macos_initialize();
 
+        // Register callback so notification clicks open update in a new tab
+        // instead of spawning a separate window process.
+        wezterm_toast_notification::set_update_click_callback(|| {
+            crate::frontend::run_kaku_update_from_menu();
+        });
+
         // Check if we just completed an update and show notification
         check_update_completed();
 
@@ -313,7 +319,7 @@ fn check_update_completed() {
             if !version.is_empty() {
                 log::info!("update_completed: showing notification for {}", version);
                 wezterm_toast_notification::persistent_toast_notification(
-                    "Kaku Updated",
+                    "Updated",
                     &format!("Successfully updated to {}.", version),
                 );
             }

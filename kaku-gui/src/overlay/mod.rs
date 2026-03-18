@@ -1,7 +1,7 @@
 use crate::termwindow::TermWindow;
 use mux::pane::{Pane, PaneId};
 use mux::tab::{Tab, TabId};
-use mux::termwiztermtab::{allocate, TermWizTerminal};
+use mux::termwiztermtab::{TermWizTerminal, allocate};
 use std::pin::Pin;
 use std::sync::Arc;
 use wezterm_term::{TerminalConfiguration, TerminalSize};
@@ -9,7 +9,6 @@ use wezterm_term::{TerminalConfiguration, TerminalSize};
 pub mod confirm;
 pub mod confirm_close_pane;
 pub mod copy;
-pub mod debug;
 pub mod launcher;
 pub mod prompt;
 pub mod quickselect;
@@ -19,8 +18,7 @@ pub mod selector;
 pub use confirm_close_pane::confirm_close_window;
 pub use confirm_close_pane::{confirm_close_pane, confirm_close_tab, confirm_quit_program};
 pub use copy::{CopyModeParams, CopyOverlay};
-pub use debug::show_debug_overlay;
-pub use launcher::{launcher, LauncherArgs, LauncherFlags};
+pub use launcher::{LauncherArgs, LauncherFlags, launcher};
 pub use quickselect::QuickSelectOverlay;
 
 pub fn start_overlay<T, F>(

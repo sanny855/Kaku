@@ -5,8 +5,8 @@ use crate::ToastNotification;
 use block2::{Block, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{define_class, msg_send, AllocAnyThread};
-use objc2_foundation::{ns_string, NSArray, NSBundle, NSDictionary, NSError, NSSet, NSString};
+use objc2::{AllocAnyThread, define_class, msg_send};
+use objc2_foundation::{NSArray, NSBundle, NSDictionary, NSError, NSSet, NSString, ns_string};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification, UNNotificationAction,
     UNNotificationActionOptions, UNNotificationCategory, UNNotificationCategoryOptions,
@@ -237,8 +237,14 @@ pub fn show_notif(toast: ToastNotification) -> Result<(), Box<dyn std::error::Er
 }
 
 fn spawn_kaku_update() {
+    if crate::invoke_update_callback() {
+        log::info!("spawn_kaku_update: handled via registered callback");
+        return;
+    }
+
+    // Fallback: spawn a new window if no callback is registered
+    log::info!("spawn_kaku_update: no callback registered, falling back to direct spawn");
     std::thread::spawn(|| {
-        // Find kaku-gui in the current app bundle or /Applications
         let kaku_gui = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(|p| p.join("kaku-gui")))
@@ -247,9 +253,6 @@ fn spawn_kaku_update() {
                 std::path::PathBuf::from("/Applications/Kaku.app/Contents/MacOS/kaku-gui")
             });
 
-        log::info!("spawn_kaku_update: launching {:?}", kaku_gui);
-
-        // Find kaku CLI in the same directory as kaku-gui
         let kaku_cli = kaku_gui
             .parent()
             .map(|p| p.join("kaku"))
