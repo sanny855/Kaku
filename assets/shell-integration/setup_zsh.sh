@@ -1103,10 +1103,27 @@ if (( \${+functions[zshz]} )); then
     fi
 fi
 
-# Load zsh-autosuggestions only if user config has not loaded it yet.
-if ! (( \${+functions[_zsh_autosuggest_start]} )) && [[ -f "\$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then
+# Detect if any autosuggest system is already active (e.g., Kiro CLI, Fig, etc.)
+# These systems wrap zle widgets with names containing "autosuggest", which would
+# conflict with zsh-autosuggestions and cause FUNCNEST recursion errors.
+_kaku_has_autosuggest_system() {
+    local w
+    for w in \${(k)widgets}; do
+        case "\${w:l}" in
+            autosuggest-*) continue ;;  # zsh-autosuggestions' own widgets
+            *autosuggest*) return 0 ;;  # third-party (Kiro CLI, Fig, etc.)
+        esac
+    done
+    return 1
+}
+
+# Load zsh-autosuggestions only if:
+# 1. User config has not loaded it yet (_zsh_autosuggest_start not defined)
+# 2. No other autosuggest system is active (to avoid widget wrapping conflicts)
+if ! (( \${+functions[_zsh_autosuggest_start]} )) && ! _kaku_has_autosuggest_system && [[ -f "\$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then
     source "\$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh"
 fi
+unset -f _kaku_has_autosuggest_system 2>/dev/null
 
 # Smart Tab behavior:
 # - Use completion while typing arguments/path-like tokens
