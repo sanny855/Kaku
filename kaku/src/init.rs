@@ -30,31 +30,18 @@ mod imp {
 #[cfg(target_os = "macos")]
 mod imp {
     use super::*;
+    use crate::shell::{detect_shell_kind, ShellKind};
     use std::os::unix::fs::PermissionsExt;
-
-    #[derive(Debug, Clone, Copy)]
-    enum ShellKind {
-        Fish,
-        Zsh,
-    }
-
-    fn detect_shell() -> ShellKind {
-        let shell = std::env::var("SHELL").unwrap_or_default();
-        match Path::new(&shell).file_name().and_then(|n| n.to_str()) {
-            Some("fish") => ShellKind::Fish,
-            _ => ShellKind::Zsh,
-        }
-    }
 
     pub fn run(update_only: bool) -> anyhow::Result<()> {
         ensure_user_config().context("ensure user config exists")?;
 
         install_kaku_wrapper().context("install kaku wrapper")?;
 
-        let shell = detect_shell();
+        let shell = detect_shell_kind();
         let script_name = match shell {
             ShellKind::Fish => "setup_fish.sh",
-            ShellKind::Zsh => "setup_zsh.sh",
+            _ => "setup_zsh.sh",
         };
         let script = resolve_setup_script(script_name)
             .ok_or_else(|| anyhow!("failed to locate {} for Kaku initialization", script_name))?;
@@ -127,9 +114,9 @@ exit 127
     }
 
     fn wrapper_path() -> PathBuf {
-        let dir = match detect_shell() {
+        let dir = match detect_shell_kind() {
             ShellKind::Fish => "fish",
-            ShellKind::Zsh => "zsh",
+            _ => "zsh",
         };
         config::HOME_DIR
             .join(".config")

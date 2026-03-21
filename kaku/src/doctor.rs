@@ -1,7 +1,7 @@
 //! Doctor command for diagnosing shell integration, environment, and runtime issues.
 
+use crate::shell::{detect_shell_kind, ShellKind};
 use clap::Parser;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, ErrorKind, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -217,55 +217,6 @@ fn build_health_group(overall_status: DoctorStatus, summary: &DoctorSummary) -> 
         title: "Health",
         status: group_status(&checks),
         checks,
-    }
-}
-
-fn detect_shell_name() -> String {
-    std::env::var("SHELL")
-        .ok()
-        .as_deref()
-        .and_then(|s| Path::new(s).file_name())
-        .and_then(OsStr::to_str)
-        .unwrap_or("")
-        .to_string()
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum ShellKind {
-    Zsh,
-    Fish,
-    Unsupported(String),
-    Unknown,
-}
-
-impl ShellKind {
-    fn is_managed(&self) -> bool {
-        matches!(self, ShellKind::Zsh | ShellKind::Fish)
-    }
-
-    fn name(&self) -> &str {
-        match self {
-            ShellKind::Zsh => "zsh",
-            ShellKind::Fish => "fish",
-            ShellKind::Unsupported(s) => s.as_str(),
-            ShellKind::Unknown => "unknown",
-        }
-    }
-}
-
-fn detect_shell_kind() -> ShellKind {
-    match std::env::var("SHELL") {
-        Err(_) => ShellKind::Unknown,
-        Ok(s) => match Path::new(&s)
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or("")
-        {
-            "zsh" => ShellKind::Zsh,
-            "fish" => ShellKind::Fish,
-            "" => ShellKind::Unknown,
-            other => ShellKind::Unsupported(other.to_string()),
-        },
     }
 }
 
@@ -628,10 +579,53 @@ fn build_runtime_group() -> DoctorGroup {
         fix: login_shell_probe.fix,
     });
 
+    #[cfg(target_os = "macos")]
+    checks.push(build_local_network_check());
+
     DoctorGroup {
         title: "Runtime",
         status: group_status(&checks),
         checks,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn build_local_network_check() -> DoctorCheck {
+    let app_bundle = kaku_bin_candidates()
+        .into_iter()
+        .find(|path| config::is_executable_file(path))
+        .and_then(|path| {
+            path.parent()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .map(PathBuf::from)
+        });
+
+    let mut details = vec![
+        "If LAN access works in Terminal or iTerm2 but fails in Kaku, compare the two launch contexts before changing shell or PATH setup.".to_string(),
+        "Run these in both apps: `route -n get <ip>`, `netstat -rn | grep <subnet>`, `ifconfig`, `scutil --nwi`, `ping -v <ip>`, `nc -vz <ip> 22`.".to_string(),
+        "Check macOS System Settings > Privacy & Security > Local Network and confirm Kaku is allowed.".to_string(),
+        "Compare launching Kaku from Finder/Dock versus Terminal, for example `open -na /Applications/Kaku.app`.".to_string(),
+    ];
+
+    if let Some(bundle) = app_bundle {
+        details.push(format!(
+            "Detected app bundle candidate: {}",
+            bundle.display()
+        ));
+    } else {
+        details.push(
+            "No installed Kaku.app bundle was detected in the standard locations.".to_string(),
+        );
+    }
+
+    DoctorCheck {
+        title: "Local Network Troubleshooting",
+        status: DoctorStatus::Info,
+        summary: "Use this when local-network access differs between Kaku and other terminals"
+            .to_string(),
+        details,
+        fix: None,
     }
 }
 
@@ -1022,7 +1016,7 @@ fn home_dir() -> PathBuf {
 }
 
 fn managed_bin_dir() -> PathBuf {
-    let shell_dir = if detect_shell_name() == "fish" {
+    let shell_dir = if detect_shell_kind() == ShellKind::Fish {
         "fish"
     } else {
         "zsh"
@@ -1039,7 +1033,7 @@ fn managed_wrapper_path() -> PathBuf {
 }
 
 fn managed_init_file() -> PathBuf {
-    if detect_shell_name() == "fish" {
+    if detect_shell_kind() == ShellKind::Fish {
         home_dir()
             .join(".config")
             .join("kaku")

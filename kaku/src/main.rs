@@ -34,6 +34,7 @@ mod doctor;
 mod init;
 mod kaku_theme;
 mod reset;
+mod shell;
 mod tui_core;
 mod update;
 mod utils;
