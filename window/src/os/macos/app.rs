@@ -161,9 +161,11 @@ fn app_window_context() -> (usize, bool) {
     let windows = conn.windows.borrow();
     let mut any_fullscreen = false;
     for window in windows.values() {
-        if window.borrow_mut().is_fullscreen() {
-            any_fullscreen = true;
-            break;
+        if let Ok(mut inner) = window.try_borrow_mut() {
+            if inner.is_fullscreen() {
+                any_fullscreen = true;
+                break;
+            }
         }
     }
 
