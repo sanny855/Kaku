@@ -21,6 +21,7 @@ use objc::*;
 use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::ffi::c_void;
+use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -802,6 +803,17 @@ extern "C" fn keyboard_selection_did_change(
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("kaku-app-tests-{}-{nanos}", name))
+    }
 
     #[test]
     fn layout_translation_modifier_flags_include_shift_and_option() {
@@ -824,6 +836,42 @@ mod tests {
         let flags = layout_translation_modifier_flags(Modifiers::CTRL | Modifiers::SUPER);
 
         assert_eq!(flags, NSEventModifierFlags::empty());
+    }
+
+    #[test]
+    fn normalize_finder_service_path_uses_parent_for_files() {
+        let dir = unique_test_path("file-parent");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let file = dir.join("demo.txt");
+        fs::write(&file, "demo").expect("create temp file");
+
+        let normalized = normalize_finder_service_path(file.to_string_lossy().into_owned());
+
+        assert_eq!(normalized, dir.to_string_lossy().into_owned());
+
+        fs::remove_dir_all(&dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn normalize_finder_service_path_keeps_directories() {
+        let dir = unique_test_path("dir-stays-dir");
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        let normalized = normalize_finder_service_path(dir.to_string_lossy().into_owned());
+
+        assert_eq!(normalized, dir.to_string_lossy().into_owned());
+
+        fs::remove_dir_all(&dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn normalize_finder_service_path_keeps_unknown_paths() {
+        let path = unique_test_path("missing-path");
+        let path = path.to_string_lossy().into_owned();
+
+        let normalized = normalize_finder_service_path(path.clone());
+
+        assert_eq!(normalized, path);
     }
 }
 
@@ -1004,6 +1052,18 @@ fn first_service_path(pasteboard: *mut Object) -> Option<String> {
     }
 }
 
+fn normalize_finder_service_path(path: String) -> String {
+    let path_ref = Path::new(&path);
+
+    if path_ref.is_file() {
+        if let Some(parent) = path_ref.parent() {
+            return parent.to_string_lossy().into_owned();
+        }
+    }
+
+    path
+}
+
 fn dispatch_or_queue_service_open(path: String, prefer_existing_window: bool) {
     note_service_open_request();
 
@@ -1169,6 +1229,7 @@ extern "C" fn open_in_kaku_service(
         log::warn!("openInKakuService: Finder provided no usable paths");
         return;
     };
+    let path = normalize_finder_service_path(path);
 
     log::debug!("openInKakuService {path}");
     dispatch_or_queue_service_open(path, true);
@@ -1185,6 +1246,7 @@ extern "C" fn open_in_kaku_window_service(
         log::warn!("openInKakuWindowService: Finder provided no usable paths");
         return;
     };
+    let path = normalize_finder_service_path(path);
 
     log::debug!("openInKakuWindowService {path}");
     dispatch_or_queue_service_open(path, false);
