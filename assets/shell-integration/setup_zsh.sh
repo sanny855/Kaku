@@ -1483,6 +1483,152 @@ ensure_kaku_tmux_integration
 # 5. Configure .zshrc
 PATH_LINE='[[ ":$PATH:" != *":$HOME/.config/kaku/zsh/bin:"* ]] && export PATH="$HOME/.config/kaku/zsh/bin:$PATH" # Kaku PATH Integration'
 SOURCE_LINE='[[ -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh" # Kaku Shell Integration'
+LEGACY_INLINE_BLOCK_PRESERVED=0
+
+legacy_inline_block_has_only_kaku_managed_lines() {
+	local line
+
+	for line in "$@"; do
+		if [[ -z "${line//[[:space:]]/}" ]]; then
+			continue
+		fi
+
+		if ! grep -Fqx -- "$line" <<'EOF'
+# Kaku Zsh Integration - DO NOT EDIT MANUALLY
+# This file is managed by Kaku.app. Any changes may be overwritten.
+export KAKU_ZSH_DIR="$HOME/.config/kaku/zsh"
+# Add bundled binaries to PATH
+export PATH="$KAKU_ZSH_DIR/bin:$PATH"
+# Initialize Starship (Cross-shell prompt)
+# Check file existence to avoid "no such file" errors in some zsh configurations
+if [[ -x "$KAKU_ZSH_DIR/bin/starship" ]]; then
+    eval "$("$KAKU_ZSH_DIR/bin/starship" init zsh)"
+elif command -v starship &> /dev/null; then
+    # Fallback to system starship if available
+    eval "$(starship init zsh)"
+fi
+# Enable color output for ls
+export CLICOLOR=1
+export LSCOLORS="Gxfxcxdxbxegedabagacad"
+# Smart History Configuration
+HISTSIZE=50000
+SAVEHIST=50000
+HISTFILE="$HOME/.zsh_history"
+setopt HIST_IGNORE_DUPS          # Do not record an event that was just recorded again
+setopt HIST_IGNORE_SPACE         # Do not record an event starting with a space
+setopt HIST_FIND_NO_DUPS         # Do not display a line previously found
+setopt SHARE_HISTORY             # Share history between all sessions
+setopt APPEND_HISTORY            # Append history to the history file (no overwriting)
+# Set default Zsh options
+setopt interactive_comments
+bindkey -e
+# Directory Navigation Options
+setopt auto_cd
+setopt auto_pushd
+setopt pushd_ignore_dups
+setopt pushdminus
+# Common Aliases (Intuitive defaults)
+alias ll='ls -lhF'   # Detailed list (human-readable sizes, no hidden files)
+alias la='ls -lAhF'  # List all (including hidden, except . and ..)
+alias l='ls -CF'     # Compact list
+# Directory Navigation
+alias ...='../..'
+alias ....='../../..'
+alias .....='../../../..'
+alias ......='../../../../..'
+alias md='mkdir -p'
+alias rd=rmdir
+# Grep Colors
+alias grep='grep --color=auto'
+alias egrep='grep -E --color=auto'
+alias fgrep='grep -F --color=auto'
+# Common Git Aliases (The Essentials)
+alias g='git'
+alias ga='git add'
+alias gaa='git add --all'
+alias gb='git branch'
+alias gbd='git branch -d'
+alias gc='git commit -v'
+alias gcmsg='git commit -m'
+alias gco='git checkout'
+alias gcb='git checkout -b'
+alias gd='git diff'
+alias gds='git diff --staged'
+alias gf='git fetch'
+alias gl='git pull'
+alias gp='git push'
+alias gst='git status'
+alias gss='git status -s'
+alias glo='git log --oneline --decorate'
+alias glg='git log --stat'
+alias glgp='git log --stat -p'
+# Load Plugins (Performance Optimized)
+# Load zsh-completions into fpath before compinit
+if [[ -d "$KAKU_ZSH_DIR/plugins/zsh-completions/src" ]]; then
+    fpath=("$KAKU_ZSH_DIR/plugins/zsh-completions/src" $fpath)
+fi
+# Optimized compinit: Use cache and only rebuild when needed (~30ms saved)
+autoload -Uz compinit
+if [[ -n "${ZDOTDIR:-$HOME}/.zcompdump"(#qN.mh+24) ]]; then
+    # Rebuild completion cache if older than 24 hours
+    compinit
+else
+    # Load from cache (much faster)
+    compinit -C
+fi
+# Load zsh-z (smart directory jumping) - Fast, no delay needed
+if [[ -f "$KAKU_ZSH_DIR/plugins/zsh-z/zsh-z.plugin.zsh" ]]; then
+    # Default to smart case matching so `z kaku` prefers `Kaku` over lowercase
+    # path entries. Users can still override this in their own shell config.
+    : "${ZSHZ_CASE:=smart}"
+    export ZSHZ_CASE
+    source "$KAKU_ZSH_DIR/plugins/zsh-z/zsh-z.plugin.zsh"
+fi
+# Load zsh-autosuggestions - Async, minimal impact
+if [[ -f "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then
+    source "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh"
+    # Smart Tab: accept inline autosuggestion if present, otherwise run completion.
+    # Avoids running completion immediately after accepting a suggestion, which can
+    # introduce unexpected spacing for some command completers.
+    # Keep this widget out of autosuggestions rebinding, otherwise POSTDISPLAY is
+    # cleared before our condition check and Tab always falls back to completion.
+    typeset -ga ZSH_AUTOSUGGEST_IGNORE_WIDGETS
+    ZSH_AUTOSUGGEST_IGNORE_WIDGETS+=(kaku_tab_accept_or_complete)
+    kaku_tab_accept_or_complete() {
+        if [[ -n "$POSTDISPLAY" ]]; then
+            zle autosuggest-accept
+        else
+            zle expand-or-complete
+        fi
+    }
+    zle -N kaku_tab_accept_or_complete
+    bindkey -M emacs '^I' kaku_tab_accept_or_complete
+    bindkey -M main '^I' kaku_tab_accept_or_complete
+    bindkey -M viins '^I' kaku_tab_accept_or_complete
+fi
+# Defer zsh-syntax-highlighting to first prompt (~40ms saved at startup)
+# This plugin must be loaded LAST, and we delay it for faster shell startup
+source "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+if [[ -f "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]]; then
+    # Simplified highlighters for better performance (removed brackets, pattern, cursor)
+    export ZSH_HIGHLIGHT_HIGHLIGHTERS=(main)
+    # Defer loading until first prompt display
+    zsh_syntax_highlighting_defer() {
+        source "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+        # Remove this hook after first run
+        precmd_functions=("${precmd_functions[@]:#zsh_syntax_highlighting_defer}")
+    }
+    # Hook into precmd (runs before prompt is displayed)
+    precmd_functions+=(zsh_syntax_highlighting_defer)
+fi
+EOF
+		then
+			return 1
+		fi
+	done
+
+	return 0
+}
 
 # Migrate legacy inline block from older versions to the single source-line model.
 cleanup_legacy_inline_block() {
@@ -1503,57 +1649,82 @@ cleanup_legacy_inline_block() {
 	fi
 
 	local tmp_file
+	local line
+	local -a block_lines=()
+	local in_block=0
+	local saw_kaku_var=0
+	local saw_syntax=0
+	local removed_block=0
+	local preserved_block=0
+	local skip_blank_after_removed=0
 	tmp_file="$(mktemp "${TMPDIR:-/tmp}/kaku-zshrc.XXXXXX")"
 
-	if awk '
-BEGIN { in_block = 0; saw_syntax = 0; saw_kaku_var = 0 }
-{
-	if (!in_block && $0 == "# Kaku Shell Integration") {
-		in_block = 1
-		saw_syntax = 0
-		saw_kaku_var = 0
-		next
-	}
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		if [[ "$in_block" == "0" ]]; then
+			if [[ "$skip_blank_after_removed" == "1" && -z "${line//[[:space:]]/}" ]]; then
+				continue
+			fi
+			skip_blank_after_removed=0
 
-	if (in_block) {
-		if ($0 ~ /KAKU_ZSH_DIR/) {
-			saw_kaku_var = 1
-			next
-		}
+			if [[ "$line" == "# Kaku Shell Integration" ]]; then
+				in_block=1
+				saw_kaku_var=0
+				saw_syntax=0
+				block_lines=()
+				continue
+			fi
 
-		if ($0 ~ /zsh-syntax-highlighting\/zsh-syntax-highlighting\.zsh/) {
-			saw_syntax = 1
-			next
-		}
+			printf '%s\n' "$line" >>"$tmp_file"
+			continue
+		fi
 
-		if (saw_kaku_var && saw_syntax && $0 ~ /^[[:space:]]*fi[[:space:]]*$/) {
-			in_block = 0
-			saw_syntax = 0
-			saw_kaku_var = 0
-			next
-		}
+		block_lines+=("$line")
+		[[ "$line" == *KAKU_ZSH_DIR* ]] && saw_kaku_var=1
+		[[ "$line" == *zsh-syntax-highlighting/zsh-syntax-highlighting.zsh* ]] && saw_syntax=1
 
-		next
-	}
+		if [[ "$saw_kaku_var" == "1" && "$saw_syntax" == "1" && "$line" =~ ^[[:space:]]*fi[[:space:]]*$ ]]; then
+			if legacy_inline_block_has_only_kaku_managed_lines "${block_lines[@]}"; then
+				removed_block=1
+				skip_blank_after_removed=1
+			else
+				preserved_block=1
+				printf '%s\n' "# Kaku Shell Integration" >>"$tmp_file"
+				local block_line
+				for block_line in "${block_lines[@]}"; do
+					printf '%s\n' "$block_line" >>"$tmp_file"
+				done
+			fi
 
-	print
-}
-END {
-	if (in_block) {
-		exit 42
-	}
-}
-' "$ZSHRC" >"$tmp_file"; then
-		if ! cmp -s "$ZSHRC" "$tmp_file"; then
-			backup_zshrc_once
-			mv "$tmp_file" "$ZSHRC"
+			in_block=0
+			saw_kaku_var=0
+			saw_syntax=0
+			block_lines=()
+		fi
+	done <"$ZSHRC"
+
+	if [[ "$in_block" == "1" ]]; then
+		rm -f "$tmp_file"
+		LEGACY_INLINE_BLOCK_PRESERVED=1
+		echo -e "${YELLOW}Warning: found unterminated legacy Kaku block; leaving .zshrc unchanged.${NC}"
+		return
+	fi
+
+	if ! cmp -s "$ZSHRC" "$tmp_file"; then
+		backup_zshrc_once
+		mv "$tmp_file" "$ZSHRC"
+		if [[ "$removed_block" == "1" ]]; then
 			echo -e "  ${GREEN}✓${NC} ${BOLD}Migrate${NC}     Removed legacy inline Kaku block from .zshrc"
-		else
-			rm -f "$tmp_file"
+		fi
+		if [[ "$preserved_block" == "1" ]]; then
+			LEGACY_INLINE_BLOCK_PRESERVED=1
+			echo -e "${YELLOW}Warning: kept legacy Kaku block with custom lines to avoid deleting user shell config.${NC}"
 		fi
 	else
 		rm -f "$tmp_file"
-		echo -e "${YELLOW}Warning: found legacy Kaku block but failed to migrate it safely; leaving .zshrc unchanged.${NC}"
+		if [[ "$preserved_block" == "1" ]]; then
+			LEGACY_INLINE_BLOCK_PRESERVED=1
+			echo -e "${YELLOW}Warning: kept legacy Kaku block with custom lines to avoid deleting user shell config.${NC}"
+		fi
 	fi
 }
 
@@ -1727,6 +1898,8 @@ has_kaku_source_line() {
 # Check if the managed lines already exist
 if has_kaku_path_line && has_kaku_source_line; then
 	echo -e "  ${GREEN}✓${NC} ${BOLD}Integrate${NC}   Already linked in .zshrc"
+elif [[ "$LEGACY_INLINE_BLOCK_PRESERVED" == "1" ]]; then
+	echo -e "  ${BLUE}•${NC} ${BOLD}Integrate${NC}   Preserved legacy inline Kaku block ${NC}(move custom lines outside it, then rerun kaku init)${NC}"
 else
 	# Backup existing .zshrc only if it doesn't have Kaku logic yet
 	backup_zshrc_once

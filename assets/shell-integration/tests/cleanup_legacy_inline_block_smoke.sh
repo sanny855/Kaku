@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Smoke tests for the cleanup_legacy_inline_block awk logic in setup_zsh.sh.
-# The awk script strips the legacy inline Kaku block from .zshrc. It returns
-# exit code 42 when the block marker is found but not properly terminated.
+# Smoke tests for the cleanup_legacy_inline_block logic in setup_zsh.sh.
+# The parser only removes legacy blocks when every non-empty line matches a
+# known Kaku-managed line. Unknown user lines keep the block intact.
 
 set -euo pipefail
 
@@ -23,50 +23,74 @@ assert_file_eq() {
   fi
 }
 
-# Inline the awk script so the test does not depend on sourcing setup_zsh.sh.
+is_known_legacy_line() {
+  local line="$1"
+  [[ -z "${line//[[:space:]]/}" ]] && return 0
+
+  grep -Fqx -- "$line" <<'EOF'
+export KAKU_ZSH_DIR="$HOME/.config/kaku/zsh"
+source "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+fi
+EOF
+}
+
 run_cleanup() {
   local input_file="$1"
   local output_file="$2"
+  local line
+  local -a block_lines=()
+  local in_block=0
+  local saw_kaku_var=0
+  local saw_syntax=0
 
-  awk '
-BEGIN { in_block = 0; saw_syntax = 0; saw_kaku_var = 0 }
-{
-  if (!in_block && $0 == "# Kaku Shell Integration") {
-    in_block = 1
-    saw_syntax = 0
-    saw_kaku_var = 0
-    next
-  }
+  : >"$output_file"
 
-  if (in_block) {
-    if ($0 ~ /KAKU_ZSH_DIR/) {
-      saw_kaku_var = 1
-      next
-    }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_block" == "0" ]]; then
+      if [[ "$line" == "# Kaku Shell Integration" ]]; then
+        in_block=1
+        saw_kaku_var=0
+        saw_syntax=0
+        block_lines=()
+        continue
+      fi
 
-    if ($0 ~ /zsh-syntax-highlighting\/zsh-syntax-highlighting\.zsh/) {
-      saw_syntax = 1
-      next
-    }
+      printf '%s\n' "$line" >>"$output_file"
+      continue
+    fi
 
-    if (saw_kaku_var && saw_syntax && $0 ~ /^[[:space:]]*fi[[:space:]]*$/) {
-      in_block = 0
-      saw_syntax = 0
-      saw_kaku_var = 0
-      next
-    }
+    block_lines+=("$line")
+    [[ "$line" == *KAKU_ZSH_DIR* ]] && saw_kaku_var=1
+    [[ "$line" == *zsh-syntax-highlighting/zsh-syntax-highlighting.zsh* ]] && saw_syntax=1
 
-    next
-  }
+    if [[ "$saw_kaku_var" == "1" && "$saw_syntax" == "1" && "$line" =~ ^[[:space:]]*fi[[:space:]]*$ ]]; then
+      local managed=1
+      local block_line
+      for block_line in "${block_lines[@]}"; do
+        if ! is_known_legacy_line "$block_line"; then
+          managed=0
+          break
+        fi
+      done
 
-  print
-}
-END {
-  if (in_block) {
-    exit 42
-  }
-}
-' "$input_file" >"$output_file"
+      if [[ "$managed" == "0" ]]; then
+        printf '%s\n' "# Kaku Shell Integration" >>"$output_file"
+        for block_line in "${block_lines[@]}"; do
+          printf '%s\n' "$block_line" >>"$output_file"
+        done
+      fi
+
+      in_block=0
+      saw_kaku_var=0
+      saw_syntax=0
+      block_lines=()
+    fi
+  done <"$input_file"
+
+  if [[ "$in_block" == "1" ]]; then
+    : >"$output_file"
+    return 42
+  fi
 }
 
 run_test() {
@@ -95,15 +119,15 @@ run_test() {
 
 LEGACY_BLOCK='# Kaku Shell Integration
 export KAKU_ZSH_DIR="$HOME/.config/kaku/zsh"
-source ~/something/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+source "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 fi'
 
-# Test 1: full legacy block is stripped, surrounding lines preserved.
+# Test 1: managed legacy block is stripped, surrounding lines preserved.
 run_test \
   $'export PATH="$HOME/bin:$PATH"\n'"$LEGACY_BLOCK"$'\nexport FOO=bar\n' \
   0 \
   $'export PATH="$HOME/bin:$PATH"\nexport FOO=bar\n' \
-  "legacy block is removed and surrounding lines preserved"
+  "managed legacy block is removed and surrounding lines preserved"
 
 # Test 2: no legacy block present - file is passed through unchanged.
 run_test \
@@ -118,5 +142,12 @@ run_test \
   42 \
   "" \
   "unterminated block exits 42 and produces no output"
+
+# Test 4: unknown user lines inside the block preserve the entire block.
+run_test \
+  $'export PATH="$HOME/bin:$PATH"\n# Kaku Shell Integration\nexport KAKU_ZSH_DIR="$HOME/.config/kaku/zsh"\nexport PATH="$HOME/.claude/bin:$PATH"\nsource "$HOME/.claude/shell/zshrc"\nsource "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"\nfi\nexport FOO=bar\n' \
+  0 \
+  $'export PATH="$HOME/bin:$PATH"\n# Kaku Shell Integration\nexport KAKU_ZSH_DIR="$HOME/.config/kaku/zsh"\nexport PATH="$HOME/.claude/bin:$PATH"\nsource "$HOME/.claude/shell/zshrc"\nsource "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"\nfi\nexport FOO=bar\n' \
+  "custom lines inside legacy block keep the block unchanged"
 
 echo "cleanup_legacy_inline_block smoke tests passed"

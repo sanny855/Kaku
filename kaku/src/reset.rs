@@ -37,6 +37,130 @@ mod imp {
     const KAKU_LEGACY_INLINE_MARKER: &str = "# Kaku Shell Integration";
     const KAKU_LEGACY_INLINE_VAR: &str = "KAKU_ZSH_DIR";
     const KAKU_LEGACY_SYNTAX_HINT: &str = "zsh-syntax-highlighting/zsh-syntax-highlighting.zsh";
+    const KAKU_LEGACY_INLINE_KNOWN_LINES: &[&str] = &[
+        "# Kaku Zsh Integration - DO NOT EDIT MANUALLY",
+        "# This file is managed by Kaku.app. Any changes may be overwritten.",
+        r#"export KAKU_ZSH_DIR="$HOME/.config/kaku/zsh""#,
+        "# Add bundled binaries to PATH",
+        r#"export PATH="$KAKU_ZSH_DIR/bin:$PATH""#,
+        "# Initialize Starship (Cross-shell prompt)",
+        "# Check file existence to avoid \"no such file\" errors in some zsh configurations",
+        r#"if [[ -x "$KAKU_ZSH_DIR/bin/starship" ]]; then"#,
+        r#"    eval "$("$KAKU_ZSH_DIR/bin/starship" init zsh)""#,
+        "elif command -v starship &> /dev/null; then",
+        "    # Fallback to system starship if available",
+        r#"    eval "$(starship init zsh)""#,
+        "fi",
+        "# Enable color output for ls",
+        "export CLICOLOR=1",
+        r#"export LSCOLORS="Gxfxcxdxbxegedabagacad""#,
+        "# Smart History Configuration",
+        "HISTSIZE=50000",
+        "SAVEHIST=50000",
+        r#"HISTFILE="$HOME/.zsh_history""#,
+        "setopt HIST_IGNORE_DUPS          # Do not record an event that was just recorded again",
+        "setopt HIST_IGNORE_SPACE         # Do not record an event starting with a space",
+        "setopt HIST_FIND_NO_DUPS         # Do not display a line previously found",
+        "setopt SHARE_HISTORY             # Share history between all sessions",
+        "setopt APPEND_HISTORY            # Append history to the history file (no overwriting)",
+        "# Set default Zsh options",
+        "setopt interactive_comments",
+        "bindkey -e",
+        "# Directory Navigation Options",
+        "setopt auto_cd",
+        "setopt auto_pushd",
+        "setopt pushd_ignore_dups",
+        "setopt pushdminus",
+        "# Common Aliases (Intuitive defaults)",
+        "alias ll='ls -lhF'   # Detailed list (human-readable sizes, no hidden files)",
+        "alias la='ls -lAhF'  # List all (including hidden, except . and ..)",
+        "alias l='ls -CF'     # Compact list",
+        "# Directory Navigation",
+        "alias ...='../..'",
+        "alias ....='../../..'",
+        "alias .....='../../../..'",
+        "alias ......='../../../../..'",
+        "alias md='mkdir -p'",
+        "alias rd=rmdir",
+        "# Grep Colors",
+        "alias grep='grep --color=auto'",
+        "alias egrep='grep -E --color=auto'",
+        "alias fgrep='grep -F --color=auto'",
+        "# Common Git Aliases (The Essentials)",
+        "alias g='git'",
+        "alias ga='git add'",
+        "alias gaa='git add --all'",
+        "alias gb='git branch'",
+        "alias gbd='git branch -d'",
+        "alias gc='git commit -v'",
+        "alias gcmsg='git commit -m'",
+        "alias gco='git checkout'",
+        "alias gcb='git checkout -b'",
+        "alias gd='git diff'",
+        "alias gds='git diff --staged'",
+        "alias gf='git fetch'",
+        "alias gl='git pull'",
+        "alias gp='git push'",
+        "alias gst='git status'",
+        "alias gss='git status -s'",
+        "alias glo='git log --oneline --decorate'",
+        "alias glg='git log --stat'",
+        "alias glgp='git log --stat -p'",
+        "# Load Plugins (Performance Optimized)",
+        "# Load zsh-completions into fpath before compinit",
+        r#"if [[ -d "$KAKU_ZSH_DIR/plugins/zsh-completions/src" ]]; then"#,
+        r#"    fpath=("$KAKU_ZSH_DIR/plugins/zsh-completions/src" $fpath)"#,
+        "# Optimized compinit: Use cache and only rebuild when needed (~30ms saved)",
+        "autoload -Uz compinit",
+        r#"if [[ -n "${ZDOTDIR:-$HOME}/.zcompdump"(#qN.mh+24) ]]; then"#,
+        "    # Rebuild completion cache if older than 24 hours",
+        "    compinit",
+        "else",
+        "    # Load from cache (much faster)",
+        "    compinit -C",
+        "# Load zsh-z (smart directory jumping) - Fast, no delay needed",
+        r#"if [[ -f "$KAKU_ZSH_DIR/plugins/zsh-z/zsh-z.plugin.zsh" ]]; then"#,
+        "    # Default to smart case matching so `z kaku` prefers `Kaku` over lowercase",
+        "    # path entries. Users can still override this in their own shell config.",
+        r#"    : "${ZSHZ_CASE:=smart}""#,
+        "    export ZSHZ_CASE",
+        r#"    source "$KAKU_ZSH_DIR/plugins/zsh-z/zsh-z.plugin.zsh""#,
+        "# Load zsh-autosuggestions - Async, minimal impact",
+        r#"if [[ -f "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then"#,
+        r#"    source "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh""#,
+        "    # Smart Tab: accept inline autosuggestion if present, otherwise run completion.",
+        "    # Avoids running completion immediately after accepting a suggestion, which can",
+        "    # introduce unexpected spacing for some command completers.",
+        "    # Keep this widget out of autosuggestions rebinding, otherwise POSTDISPLAY is",
+        "    # cleared before our condition check and Tab always falls back to completion.",
+        "    typeset -ga ZSH_AUTOSUGGEST_IGNORE_WIDGETS",
+        "    ZSH_AUTOSUGGEST_IGNORE_WIDGETS+=(kaku_tab_accept_or_complete)",
+        "    kaku_tab_accept_or_complete() {",
+        r#"        if [[ -n "$POSTDISPLAY" ]]; then"#,
+        "            zle autosuggest-accept",
+        "        else",
+        "            zle expand-or-complete",
+        "        fi",
+        "    }",
+        "    zle -N kaku_tab_accept_or_complete",
+        r#"    bindkey -M emacs '^I' kaku_tab_accept_or_complete"#,
+        r#"    bindkey -M main '^I' kaku_tab_accept_or_complete"#,
+        r#"    bindkey -M viins '^I' kaku_tab_accept_or_complete"#,
+        "# Defer zsh-syntax-highlighting to first prompt (~40ms saved at startup)",
+        "# This plugin must be loaded LAST, and we delay it for faster shell startup",
+        r#"source "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh""#,
+        r#"if [[ -f "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]]; then"#,
+        "    # Simplified highlighters for better performance (removed brackets, pattern, cursor)",
+        "    export ZSH_HIGHLIGHT_HIGHLIGHTERS=(main)",
+        "    # Defer loading until first prompt display",
+        "    zsh_syntax_highlighting_defer() {",
+        r#"        source "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh""#,
+        "        # Remove this hook after first run",
+        r#"        precmd_functions=("${precmd_functions[@]:#zsh_syntax_highlighting_defer}")"#,
+        "    }",
+        "    # Hook into precmd (runs before prompt is displayed)",
+        "    precmd_functions+=(zsh_syntax_highlighting_defer)",
+    ];
 
     const KAKU_GIT_DEFAULTS: &[(&str, &str)] = &[
         ("core.pager", "delta"),
@@ -535,12 +659,18 @@ mod imp {
 
                 if saw_kaku_var {
                     if let Some(end_idx) = end {
-                        changed = true;
-                        i = end_idx + 1;
-                        while i < lines.len() && lines[i].trim().is_empty() {
-                            i += 1;
+                        let block_lines = &lines[i + 1..=end_idx];
+                        if block_lines
+                            .iter()
+                            .all(|line| is_known_legacy_inline_line(line))
+                        {
+                            changed = true;
+                            i = end_idx + 1;
+                            while i < lines.len() && lines[i].trim().is_empty() {
+                                i += 1;
+                            }
+                            continue;
                         }
-                        continue;
                     } else {
                         return (content.to_string(), false);
                     }
@@ -560,6 +690,11 @@ mod imp {
             merged.push('\n');
         }
         (merged, true)
+    }
+
+    fn is_known_legacy_inline_line(line: &str) -> bool {
+        let trimmed = line.trim();
+        trimmed.is_empty() || KAKU_LEGACY_INLINE_KNOWN_LINES.contains(&trimmed)
     }
 
     fn remove_file_if_exists(
@@ -614,7 +749,9 @@ mod imp {
 
     #[cfg(test)]
     mod tests {
-        use super::{is_active_kaku_tmux_source_line, KAKU_TMUX_SOURCE_PATTERN};
+        use super::{
+            is_active_kaku_tmux_source_line, strip_legacy_inline_block, KAKU_TMUX_SOURCE_PATTERN,
+        };
 
         #[test]
         fn active_tmux_source_line_is_detected() {
@@ -633,6 +770,43 @@ mod imp {
         fn plain_text_reference_is_ignored() {
             let line = format!("note: {}", KAKU_TMUX_SOURCE_PATTERN);
             assert!(!is_active_kaku_tmux_source_line(&line));
+        }
+
+        #[test]
+        fn strip_legacy_inline_block_removes_known_minimal_block() {
+            let input = r#"export PATH="$HOME/bin:$PATH"
+# Kaku Shell Integration
+export KAKU_ZSH_DIR="$HOME/.config/kaku/zsh"
+source "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+fi
+export FOO=bar
+"#;
+
+            let (updated, changed) = strip_legacy_inline_block(input);
+            assert!(changed);
+            assert_eq!(
+                updated,
+                r#"export PATH="$HOME/bin:$PATH"
+export FOO=bar
+"#
+            );
+        }
+
+        #[test]
+        fn strip_legacy_inline_block_preserves_unknown_user_lines() {
+            let input = r#"export PATH="$HOME/bin:$PATH"
+# Kaku Shell Integration
+export KAKU_ZSH_DIR="$HOME/.config/kaku/zsh"
+export PATH="$HOME/.claude/bin:$PATH"
+source "$HOME/.claude/shell/zshrc"
+source "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+fi
+export FOO=bar
+"#;
+
+            let (updated, changed) = strip_legacy_inline_block(input);
+            assert!(!changed);
+            assert_eq!(updated, input);
         }
     }
 }
