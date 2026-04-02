@@ -30,11 +30,9 @@ print_config_update_highlights() {
 	local wrap_width=72
 	local current_group=""
 
-	local CYAN='\033[0;36m'
-	local GREEN='\033[0;32m'
-	local DIM='\033[2m'
-	local BOLD='\033[1m'
-	local NC='\033[0m'
+	local GREEN=$'\033[0;32m'
+	local DIM=$'\033[2m'
+	local NC=$'\033[0m'
 
 	if [[ ! -f "$highlights_file" ]]; then
 		return 1
