@@ -783,7 +783,12 @@ impl TabBarState {
         // Pre-compute all tab titles in a single Lua scope to avoid serializing
         // Config, tabs, and panes sequences once per tab.
         let precomputed_titles: Vec<Option<TitleText>> = if number_of_tabs > 0 {
-            call_format_tab_titles_batch(tab_info, pane_info, config, tab_title_max_width_for_callback)
+            call_format_tab_titles_batch(
+                tab_info,
+                pane_info,
+                config,
+                tab_title_max_width_for_callback,
+            )
         } else {
             vec![]
         };
