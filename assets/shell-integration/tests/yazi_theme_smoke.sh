@@ -13,7 +13,8 @@ trap cleanup EXIT
 
 mkdir -p "$tmp_dir/vendor/fast-syntax-highlighting" \
 	"$tmp_dir/vendor/zsh-autosuggestions" \
-	"$tmp_dir/vendor/zsh-completions"
+	"$tmp_dir/vendor/zsh-completions" \
+	"$tmp_dir/vendor/zsh-z"
 
 run_setup() {
 	local home_dir="$1"
