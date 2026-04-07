@@ -701,6 +701,46 @@ sync_kaku_yazi_flavors
 ensure_kaku_yazi_theme
 install_yazi_wrapper
 
+AUTOSUGGEST_CLI_PROVIDER=""
+if command -v kiro-cli >/dev/null 2>&1; then
+	AUTOSUGGEST_CLI_PROVIDER="kiro-cli"
+elif command -v q >/dev/null 2>&1; then
+	AUTOSUGGEST_CLI_PROVIDER="q"
+fi
+
+if [[ -n "$AUTOSUGGEST_CLI_PROVIDER" ]]; then
+	AUTOSUGGEST_BLOCK="$(cat <<EOF
+# Kaku defers autosuggestions to the external provider detected during kaku init.
+typeset -g _kaku_autosuggest_cli_provider="${AUTOSUGGEST_CLI_PROVIDER}"
+typeset -g _kaku_external_autosuggest_provider=0
+
+if _kaku_has_autosuggest_system; then
+    _kaku_external_autosuggest_provider=1
+fi
+if [[ -n "\${_kaku_autosuggest_cli_provider:-}" ]]; then
+    _kaku_external_autosuggest_provider=1
+fi
+EOF
+)"
+else
+	AUTOSUGGEST_BLOCK="$(cat <<'EOF'
+typeset -g _kaku_autosuggest_cli_provider=""
+typeset -g _kaku_external_autosuggest_provider=0
+
+if _kaku_has_autosuggest_system; then
+    _kaku_external_autosuggest_provider=1
+fi
+
+# Load zsh-autosuggestions only if:
+# 1. User config has not loaded it yet (_zsh_autosuggest_start not defined)
+# 2. No other autosuggest system is active (to avoid widget wrapping conflicts)
+if ! (( ${+functions[_zsh_autosuggest_start]} )) && [[ "${_kaku_external_autosuggest_provider:-0}" != "1" ]] && [[ -f "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then
+    source "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh"
+fi
+EOF
+)"
+fi
+
 # 3. Create/Update Kaku Init File (managed by Kaku)
 cat <<EOF >"$KAKU_INIT_FILE"
 # Kaku Zsh Integration - DO NOT EDIT MANUALLY
@@ -1115,12 +1155,7 @@ _kaku_has_autosuggest_system() {
     return 1
 }
 
-# Load zsh-autosuggestions only if:
-# 1. User config has not loaded it yet (_zsh_autosuggest_start not defined)
-# 2. No other autosuggest system is active (to avoid widget wrapping conflicts)
-if ! (( \${+functions[_zsh_autosuggest_start]} )) && ! _kaku_has_autosuggest_system && [[ -f "\$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then
-    source "\$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh"
-fi
+$AUTOSUGGEST_BLOCK
 unset -f _kaku_has_autosuggest_system 2>/dev/null
 
 # Smart Tab behavior:
@@ -1132,7 +1167,9 @@ if [[ -z "\${KAKU_SMART_TAB_DISABLE:-}" ]] && [[ "\${TERM_PROGRAM:-}" == "Kaku" 
         emulate -L zsh
 
         local has_suggestion=0
-        if (( \${+widgets[autosuggest-accept]} )) && [[ -n "\${POSTDISPLAY:-}" ]]; then
+        # When Kaku defers autosuggestions to an external provider, keep Tab
+        # as completion-only to avoid widget recursion.
+        if [[ "\${_kaku_external_autosuggest_provider:-0}" != "1" ]] && (( \${+widgets[autosuggest-accept]} )) && [[ -n "\${POSTDISPLAY:-}" ]]; then
             has_suggestion=1
         fi
 
@@ -1636,8 +1673,10 @@ if [[ -f "$KAKU_ZSH_DIR/plugins/zsh-z/zsh-z.plugin.zsh" ]]; then
     export ZSHZ_CASE
     source "$KAKU_ZSH_DIR/plugins/zsh-z/zsh-z.plugin.zsh"
 fi
-# Load zsh-autosuggestions - Async, minimal impact
-if [[ -f "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then
+# Load zsh-autosuggestions only if:
+# 1. User config has not loaded it yet (_zsh_autosuggest_start not defined)
+# 2. No other autosuggest system is active (to avoid widget wrapping conflicts)
+if ! (( ${+functions[_zsh_autosuggest_start]} )) && [[ "${_kaku_external_autosuggest_provider:-0}" != "1" ]] && [[ -f "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then
     source "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh"
     # Smart Tab: accept inline autosuggestion if present, otherwise run completion.
     # Avoids running completion immediately after accepting a suggestion, which can

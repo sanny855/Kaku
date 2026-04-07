@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context};
+use anyhow::{Context, anyhow, bail};
 use clap::Parser;
 use std::io::{self, IsTerminal, Write};
 use std::os::unix::process::CommandExt;
@@ -128,6 +128,20 @@ mod imp {
         r#"    : "${ZSHZ_CASE:=smart}""#,
         "    export ZSHZ_CASE",
         r#"    source "$KAKU_ZSH_DIR/plugins/zsh-z/zsh-z.plugin.zsh""#,
+        "# Kaku defers autosuggestions to the external provider detected during kaku init.",
+        r#"typeset -g _kaku_autosuggest_cli_provider="""#,
+        r#"typeset -g _kaku_autosuggest_cli_provider="kiro-cli""#,
+        r#"typeset -g _kaku_autosuggest_cli_provider="q""#,
+        "typeset -g _kaku_external_autosuggest_provider=0",
+        "if _kaku_has_autosuggest_system; then",
+        "    _kaku_external_autosuggest_provider=1",
+        r#"if [[ -n "${_kaku_autosuggest_cli_provider:-}" ]]; then"#,
+        "# Load zsh-autosuggestions only if:",
+        "# 1. User config has not loaded it yet (_zsh_autosuggest_start not defined)",
+        "# 2. No other autosuggest system is active (to avoid widget wrapping conflicts)",
+        r#"if ! (( ${+functions[_zsh_autosuggest_start]} )) && [[ "${_kaku_external_autosuggest_provider:-0}" != "1" ]] && [[ -f "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then"#,
+        "# When Kaku defers autosuggestions to an external provider, keep Tab",
+        "# as completion-only to avoid widget recursion.",
         "# Load zoxide (smart directory jumping) if not already provided by user config.",
         r#"if command -v zoxide &>/dev/null && ! (( ${+functions[__zoxide_z]} )); then"#,
         r#"    eval "$(zoxide init zsh)""#,
@@ -764,7 +778,7 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use super::{
-            is_active_kaku_tmux_source_line, strip_legacy_inline_block, KAKU_TMUX_SOURCE_PATTERN,
+            KAKU_TMUX_SOURCE_PATTERN, is_active_kaku_tmux_source_line, strip_legacy_inline_block,
         };
 
         #[test]

@@ -1,6 +1,6 @@
 //! Doctor command for diagnosing shell integration, environment, and runtime issues.
 
-use crate::shell::{detect_shell_kind, ShellKind};
+use crate::shell::{ShellKind, detect_shell_kind};
 use clap::Parser;
 use std::fs;
 use std::io::{self, ErrorKind, IsTerminal, Write};
@@ -367,6 +367,11 @@ fn build_shell_integration_group() -> DoctorGroup {
     }
 
     let is_fish = shell_kind == ShellKind::Fish;
+    let autosuggest_provider = if is_fish {
+        None
+    } else {
+        detect_external_autosuggest_cli_provider()
+    };
 
     let init_file = managed_init_file();
     let init_exists = init_file.is_file();
@@ -394,6 +399,10 @@ fn build_shell_integration_group() -> DoctorGroup {
             Some("Run `kaku init --update-only`".to_string())
         },
     });
+
+    if let Some(provider) = autosuggest_provider {
+        checks.push(build_zsh_external_autosuggest_check(&init_file, provider));
+    }
 
     let wrapper = managed_wrapper_path();
     let wrapper_exists = wrapper.is_file();
@@ -626,6 +635,121 @@ fn build_local_network_check() -> DoctorCheck {
             .to_string(),
         details,
         fix: None,
+    }
+}
+
+fn detect_external_autosuggest_cli_provider() -> Option<&'static str> {
+    if path_has_executable("kiro-cli") {
+        Some("kiro-cli")
+    } else if path_has_executable("q") {
+        Some("q")
+    } else {
+        None
+    }
+}
+
+fn path_has_executable(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+
+    std::env::split_paths(&path).any(|dir| config::is_executable_file(&dir.join(name)))
+}
+
+fn zsh_autosuggest_provider_marker(provider: &str) -> String {
+    format!(r#"typeset -g _kaku_autosuggest_cli_provider="{provider}""#)
+}
+
+fn zsh_init_has_autosuggest_provider_marker(content: &str, provider: &str) -> bool {
+    content.contains(&zsh_autosuggest_provider_marker(provider))
+}
+
+fn zsh_init_loads_bundled_autosuggestions(content: &str) -> bool {
+    content
+        .contains(r#"source "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh""#)
+}
+
+fn zsh_init_defers_autosuggestions_to_provider(content: &str, provider: &str) -> bool {
+    zsh_init_has_autosuggest_provider_marker(content, provider)
+        && !zsh_init_loads_bundled_autosuggestions(content)
+}
+
+fn build_zsh_external_autosuggest_check(init_file: &Path, provider: &str) -> DoctorCheck {
+    let fix = format!(
+        "Run `kaku init --update-only` to regenerate {} with {} autosuggest compatibility, then restart zsh with `exec zsh -l`",
+        init_file.display(),
+        provider
+    );
+    let mut details = vec![
+        format!("Detected external autosuggest CLI on PATH: {provider}"),
+        format!(
+            "Checked {} for the provider marker and bundled zsh-autosuggestions source line",
+            init_file.display()
+        ),
+        "When compatibility is active, Kaku keeps Tab bound but leaves it in completion-only mode to avoid widget recursion.".to_string(),
+    ];
+
+    let init_content = match fs::read_to_string(init_file) {
+        Ok(content) => content,
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return DoctorCheck {
+                title: "External Autosuggest Compatibility",
+                status: DoctorStatus::Warn,
+                summary: format!(
+                    "Detected {provider} on PATH, but {} is missing",
+                    init_file.display()
+                ),
+                details,
+                fix: Some(fix),
+            };
+        }
+        Err(err) => {
+            details.push(format!("Read error: {}", err));
+            return DoctorCheck {
+                title: "External Autosuggest Compatibility",
+                status: DoctorStatus::Warn,
+                summary: format!(
+                    "Detected {provider} on PATH, but {} could not be read",
+                    init_file.display()
+                ),
+                details,
+                fix: Some(fix),
+            };
+        }
+    };
+
+    if zsh_init_defers_autosuggestions_to_provider(&init_content, provider) {
+        return DoctorCheck {
+            title: "External Autosuggest Compatibility",
+            status: DoctorStatus::Info,
+            summary: format!(
+                "Detected {provider} on PATH; managed zsh init defers autosuggestions to the external provider"
+            ),
+            details,
+            fix: None,
+        };
+    }
+
+    if !zsh_init_has_autosuggest_provider_marker(&init_content, provider) {
+        details.push(format!(
+            "Missing provider marker: {}",
+            zsh_autosuggest_provider_marker(provider)
+        ));
+    }
+    if zsh_init_loads_bundled_autosuggestions(&init_content) {
+        details.push(
+            "Managed zsh init still sources bundled zsh-autosuggestions, which can reintroduce widget recursion.".to_string(),
+        );
+    }
+
+    DoctorCheck {
+        title: "External Autosuggest Compatibility",
+        status: DoctorStatus::Warn,
+        summary: format!(
+            "Detected {provider} on PATH, but managed zsh init is not in compatibility mode"
+        ),
+        details,
+        fix: Some(fix),
     }
 }
 
@@ -1282,5 +1406,45 @@ end
     fn shell_kind_zsh_and_fish_are_managed() {
         assert!(ShellKind::Zsh.is_managed());
         assert!(ShellKind::Fish.is_managed());
+    }
+
+    #[test]
+    fn autosuggest_compatibility_requires_provider_marker() {
+        let content = r#"
+typeset -g _kaku_autosuggest_cli_provider=""
+typeset -g _kaku_external_autosuggest_provider=0
+"#;
+
+        assert!(!zsh_init_defers_autosuggestions_to_provider(
+            content, "kiro-cli"
+        ));
+    }
+
+    #[test]
+    fn autosuggest_compatibility_rejects_bundled_source_line() {
+        let content = r#"
+typeset -g _kaku_autosuggest_cli_provider="kiro-cli"
+source "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh"
+"#;
+
+        assert!(zsh_init_has_autosuggest_provider_marker(
+            content, "kiro-cli"
+        ));
+        assert!(zsh_init_loads_bundled_autosuggestions(content));
+        assert!(!zsh_init_defers_autosuggestions_to_provider(
+            content, "kiro-cli"
+        ));
+    }
+
+    #[test]
+    fn autosuggest_compatibility_accepts_provider_marker_without_bundled_source() {
+        let content = r#"
+typeset -g _kaku_autosuggest_cli_provider="kiro-cli"
+typeset -g _kaku_external_autosuggest_provider=0
+"#;
+
+        assert!(zsh_init_defers_autosuggestions_to_provider(
+            content, "kiro-cli"
+        ));
     }
 }
