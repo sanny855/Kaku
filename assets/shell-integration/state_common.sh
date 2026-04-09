@@ -38,6 +38,20 @@ print_config_update_highlights() {
 		return 1
 	fi
 
+	local group_count=0
+	local prev_v=""
+	while IFS=$'\t' read -r version highlight; do
+		if [[ -z "${version:-}" || "$version" == \#* || -z "${highlight:-}" ]]; then
+			continue
+		fi
+		if [[ "$version" =~ ^[0-9]+$ ]] && (( version > from_version && version <= target_version )); then
+			if [[ "$version" != "$prev_v" ]]; then
+				(( group_count++ ))
+				prev_v="$version"
+			fi
+		fi
+	done < "$highlights_file"
+
 	while IFS=$'\t' read -r version highlight; do
 		if [[ -z "${version:-}" || "$version" == \#* || -z "${highlight:-}" ]]; then
 			continue
@@ -50,7 +64,7 @@ print_config_update_highlights() {
 			seen+="$highlight"$'\n'
 			found=0
 
-			if [[ "$version" != "$current_group" ]]; then
+			if (( group_count > 1 )) && [[ "$version" != "$current_group" ]]; then
 				current_group="$version"
 				printf "  ${DIM}─── v%s ${NC}\n" "$version"
 			fi
