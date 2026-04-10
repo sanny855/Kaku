@@ -184,15 +184,29 @@ fn run_kaku_subcommand_in_new_tab(subcommand: &str, running_flag: Option<&'stati
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    // Use -ic (interactive) so the shell sources rc files (where proxy env vars
-    // like http_proxy/ALL_PROXY are typically set), but skip -l (login) which
-    // loads the full profile and is much slower.
-    let command_str = if shell_name == "fish" {
-        format!(
-            "{fallback_bin} {subcommand}; printf '\\nPress Enter to close...\\n'; read -l dummy"
-        )
+    // Use login + interactive shell (-lic / -l -i -c) to match the default Kaku
+    // tab behavior (argv0 = "-zsh"). This ensures ~/.zprofile is sourced, where
+    // macOS users typically export proxy variables (https_proxy, ALL_PROXY, etc.).
+    // Without -l, the GUI process env (launched via launchd with a minimal
+    // environment) is inherited and ~/.zprofile is never loaded, so curl hits
+    // api.github.com without a proxy -- causing 30+ second timeouts on Chinese
+    // networks. The extra few hundred ms of profile loading is negligible.
+    let shell_args = if shell_name == "fish" {
+        vec![
+            shell.clone(),
+            "-l".to_string(),
+            "-i".to_string(),
+            "-c".to_string(),
+            format!("{fallback_bin} {subcommand}; printf '\\nPress Enter to close...\\n'; read -l dummy"),
+        ]
     } else {
-        format!("{fallback_bin} {subcommand}; printf '\\nPress Enter to close...\\n'; read dummy")
+        vec![
+            shell.clone(),
+            "-lic".to_string(),
+            format!(
+                "{fallback_bin} {subcommand}; printf '\\nPress Enter to close...\\n'; read dummy"
+            ),
+        ]
     };
 
     let flag = running_flag.map(|f| f as *const AtomicBool as usize);
@@ -214,7 +228,7 @@ fn run_kaku_subcommand_in_new_tab(subcommand: &str, running_flag: Option<&'stati
 
         let spawn_cmd = SpawnCommand {
             domain: SpawnTabDomain::DomainName("local".to_string()),
-            args: Some(vec![shell, "-ic".to_string(), command_str]),
+            args: Some(shell_args),
             ..Default::default()
         };
 

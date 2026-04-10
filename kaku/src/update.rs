@@ -76,7 +76,12 @@ mod imp {
         println!("Current version: {}", current_version_display);
         println!("Checking latest release...");
 
-        let release = match curl_get_text(RELEASE_API_URL, &current_version)
+        // Detect the macOS system proxy once and reuse for all curl calls.
+        // This ensures updates work even when launched from the menu bar or a
+        // notification, where the process env has no proxy vars.
+        let proxy = detect_macos_proxy();
+
+        let release = match curl_get_text(RELEASE_API_URL, &current_version, &proxy)
             .context("request release metadata")
             .and_then(|raw| {
                 serde_json::from_str::<GitHubRelease>(&raw).context("parse release metadata")
@@ -100,7 +105,7 @@ mod imp {
                 );
                 return Ok(());
             }
-        } else if let Some(tag_name) = resolve_latest_tag_from_redirect(&current_version)? {
+        } else if let Some(tag_name) = resolve_latest_tag_from_redirect(&current_version, &proxy)? {
             if !is_newer_version(&tag_name, &current_version) {
                 println!(
                     "Already up to date. Current={} Latest={}",
@@ -141,11 +146,11 @@ mod imp {
         println!("Downloading {} ...", UPDATE_ZIP_NAME);
         // Flush stdout before curl progress bar to avoid garbled output
         let _ = io::stdout().flush();
-        curl_download_to_file(zip_url, &zip_path, &current_version)
+        curl_download_to_file(zip_url, &zip_path, &current_version, &proxy)
             .context("failed to download update package")?;
 
         if let Some(sha_url) = sha_url {
-            match curl_get_text(sha_url, &current_version) {
+            match curl_get_text(sha_url, &current_version, &proxy) {
                 Ok(checksum_text) => {
                     println!("Verifying package checksum...");
                     verify_sha256(&zip_path, &checksum_text)
@@ -429,26 +434,28 @@ mod imp {
         )
     }
 
-    fn resolve_latest_tag_from_redirect(current_version: &str) -> anyhow::Result<Option<String>> {
-        let output = run_output(
-            Command::new("/usr/bin/curl")
-                .arg("--fail")
-                .arg("--location")
-                .arg("--silent")
-                .arg("--show-error")
-                .arg("--retry")
-                .arg("2")
-                .arg("--connect-timeout")
-                .arg("10")
-                .arg("--user-agent")
-                .arg(format!("kaku/{}", current_version))
-                .arg("--write-out")
-                .arg("%{url_effective}")
-                .arg("--output")
-                .arg("/dev/null")
-                .arg(RELEASE_LATEST_URL),
-            "resolve latest release tag via redirect",
-        )?;
+    fn resolve_latest_tag_from_redirect(
+        current_version: &str,
+        proxy: &Option<String>,
+    ) -> anyhow::Result<Option<String>> {
+        let mut cmd = Command::new("/usr/bin/curl");
+        cmd.arg("--fail")
+            .arg("--location")
+            .arg("--silent")
+            .arg("--show-error")
+            .arg("--retry")
+            .arg("2")
+            .arg("--connect-timeout")
+            .arg("10")
+            .arg("--user-agent")
+            .arg(format!("kaku/{}", current_version))
+            .arg("--write-out")
+            .arg("%{url_effective}")
+            .arg("--output")
+            .arg("/dev/null")
+            .arg(RELEASE_LATEST_URL);
+        apply_proxy(&mut cmd, proxy);
+        let output = run_output(&mut cmd, "resolve latest release tag via redirect")?;
         let effective_url = String::from_utf8(output)
             .context("latest redirect url is not valid UTF-8")?
             .trim()
@@ -511,22 +518,106 @@ mod imp {
         }
     }
 
-    fn curl_get_text(url: &str, current_version: &str) -> anyhow::Result<String> {
-        let output = run_output(
-            Command::new("/usr/bin/curl")
-                .arg("--fail")
-                .arg("--location")
-                .arg("--silent")
-                .arg("--show-error")
-                .arg("--retry")
-                .arg("3")
-                .arg("--connect-timeout")
-                .arg("15")
-                .arg("--user-agent")
-                .arg(format!("kaku/{}", current_version))
-                .arg(url),
-            "request update metadata",
-        )?;
+    // Detect the macOS system HTTPS proxy from Network Settings so that `kaku update`
+    // works even when launched from the menu bar or a notification (where the process
+    // env comes from launchd and contains no proxy vars). Returns None when any proxy
+    // env var is already present in the current process -- in that case curl already
+    // picks it up automatically and we do not need to pass anything extra.
+    fn detect_macos_proxy() -> Option<String> {
+        const PROXY_VARS: &[&str] = &[
+            "https_proxy",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "all_proxy",
+        ];
+        if PROXY_VARS.iter().any(|v| std::env::var(v).is_ok()) {
+            return None;
+        }
+
+        let out = Command::new("/usr/sbin/scutil")
+            .arg("--proxy")
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+
+        let text = String::from_utf8_lossy(&out.stdout);
+        parse_scutil_proxy(&text)
+    }
+
+    fn parse_scutil_proxy(text: &str) -> Option<String> {
+        let mut https_enabled = false;
+        let mut https_host = String::new();
+        let mut https_port = String::new();
+        let mut http_enabled = false;
+        let mut http_host = String::new();
+        let mut http_port = String::new();
+        let mut socks_enabled = false;
+        let mut socks_host = String::new();
+        let mut socks_port = String::new();
+
+        for line in text.lines() {
+            if let Some((key, val)) = line.trim().split_once(" : ") {
+                match key.trim() {
+                    "HTTPSEnable" => https_enabled = val.trim() == "1",
+                    "HTTPSProxy" => https_host = val.trim().to_string(),
+                    "HTTPSPort" => https_port = val.trim().to_string(),
+                    "HTTPEnable" => http_enabled = val.trim() == "1",
+                    "HTTPProxy" => http_host = val.trim().to_string(),
+                    "HTTPPort" => http_port = val.trim().to_string(),
+                    "SOCKSEnable" => socks_enabled = val.trim() == "1",
+                    "SOCKSProxy" => socks_host = val.trim().to_string(),
+                    "SOCKSPort" => socks_port = val.trim().to_string(),
+                    _ => {}
+                }
+            }
+        }
+
+        if https_enabled && !https_host.is_empty() && !https_port.is_empty() {
+            return Some(format!("http://{}:{}", https_host, https_port));
+        }
+        if http_enabled && !http_host.is_empty() && !http_port.is_empty() {
+            return Some(format!("http://{}:{}", http_host, http_port));
+        }
+        if socks_enabled && !socks_host.is_empty() && !socks_port.is_empty() {
+            return Some(format!("socks5h://{}:{}", socks_host, socks_port));
+        }
+        None
+    }
+
+    fn apply_proxy(cmd: &mut Command, proxy: &Option<String>) {
+        if let Some(p) = proxy {
+            cmd.env("https_proxy", p)
+                .env("HTTPS_PROXY", p)
+                .env("http_proxy", p)
+                .env("HTTP_PROXY", p)
+                .env("all_proxy", p)
+                .env("ALL_PROXY", p);
+        }
+    }
+
+    fn curl_get_text(
+        url: &str,
+        current_version: &str,
+        proxy: &Option<String>,
+    ) -> anyhow::Result<String> {
+        let mut cmd = Command::new("/usr/bin/curl");
+        cmd.arg("--fail")
+            .arg("--location")
+            .arg("--silent")
+            .arg("--show-error")
+            .arg("--retry")
+            .arg("3")
+            .arg("--connect-timeout")
+            .arg("15")
+            .arg("--user-agent")
+            .arg(format!("kaku/{}", current_version))
+            .arg(url);
+        apply_proxy(&mut cmd, proxy);
+        let output = run_output(&mut cmd, "request update metadata")?;
         String::from_utf8(output).context("curl returned non-utf8 response")
     }
 
@@ -534,23 +625,23 @@ mod imp {
         url: &str,
         output_path: &Path,
         current_version: &str,
+        proxy: &Option<String>,
     ) -> anyhow::Result<()> {
-        run_status(
-            Command::new("/usr/bin/curl")
-                .arg("--fail")
-                .arg("--location")
-                .arg("--progress-bar")
-                .arg("--retry")
-                .arg("3")
-                .arg("--connect-timeout")
-                .arg("20")
-                .arg("--user-agent")
-                .arg(format!("kaku/{}", current_version))
-                .arg("--output")
-                .arg(output_path)
-                .arg(url),
-            "download update package",
-        )
+        let mut cmd = Command::new("/usr/bin/curl");
+        cmd.arg("--fail")
+            .arg("--location")
+            .arg("--progress-bar")
+            .arg("--retry")
+            .arg("3")
+            .arg("--connect-timeout")
+            .arg("20")
+            .arg("--user-agent")
+            .arg(format!("kaku/{}", current_version))
+            .arg("--output")
+            .arg(output_path)
+            .arg(url);
+        apply_proxy(&mut cmd, proxy);
+        run_status(&mut cmd, "download update package")
     }
 
     fn verify_sha256(zip_path: &Path, checksum_text: &str) -> anyhow::Result<()> {
@@ -1052,5 +1143,71 @@ log "done"
             return None;
         }
         Some(out)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{is_newer_version, parse_scutil_proxy};
+
+        #[test]
+        fn semver_numeric_comparison() {
+            assert!(is_newer_version("0.1.10", "0.1.9"));
+            assert!(!is_newer_version("0.2.0", "0.11.0"));
+            assert!(!is_newer_version("0.1.1", "0.1.1"));
+            assert!(is_newer_version("v0.1.2", "0.1.1"));
+        }
+
+        #[test]
+        fn parse_scutil_proxy_prefers_https_then_http_then_socks() {
+            let text = r#"
+<dictionary> {
+  HTTPEnable : 1
+  HTTPPort : 8080
+  HTTPProxy : 127.0.0.1
+  HTTPSEnable : 1
+  HTTPSPort : 8443
+  HTTPSProxy : proxy.example.com
+  SOCKSEnable : 1
+  SOCKSPort : 1080
+  SOCKSProxy : socks.example.com
+}
+"#;
+
+            assert_eq!(
+                parse_scutil_proxy(text).as_deref(),
+                Some("http://proxy.example.com:8443")
+            );
+        }
+
+        #[test]
+        fn parse_scutil_proxy_uses_socks5h_for_socks_proxy() {
+            let text = r#"
+<dictionary> {
+  HTTPEnable : 0
+  HTTPSEnable : 0
+  SOCKSEnable : 1
+  SOCKSPort : 1080
+  SOCKSProxy : 127.0.0.1
+}
+"#;
+
+            assert_eq!(
+                parse_scutil_proxy(text).as_deref(),
+                Some("socks5h://127.0.0.1:1080")
+            );
+        }
+
+        #[test]
+        fn parse_scutil_proxy_returns_none_when_no_enabled_proxy_has_endpoint() {
+            let text = r#"
+<dictionary> {
+  HTTPEnable : 0
+  HTTPSEnable : 0
+  SOCKSEnable : 0
+}
+"#;
+
+            assert_eq!(parse_scutil_proxy(text), None);
+        }
     }
 }

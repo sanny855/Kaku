@@ -2738,9 +2738,9 @@ wezterm.on('format-tab-title', function(tab, tabs, _, effective_config, hover, m
     has_bell = false
   end
 
-  -- Bell indicator: show a small dot after the title when a BEL was received,
-  -- and honor the standard bell_tab_indicator toggle.
-  if has_bell and effective_config.bell_tab_indicator ~= false then
+  -- Bell indicator: the dot occupies the same 1-cell slot as the trailing space
+  -- so tab width stays constant (N+2) whether or not a bell is pending.
+  if effective_config.bell_tab_indicator ~= false then
     local tab_bg = tab_bar_colors and tab_bar_colors.background
     local is_light = tab_bg == '#FFFCF0' or tab_bg == '#fffcf0'
     local dot_color = is_light and '#AD8301' or KAKU_ORANGE
@@ -2748,8 +2748,8 @@ wezterm.on('format-tab-title', function(tab, tabs, _, effective_config, hover, m
       { Attribute = { Intensity = intensity } },
       { Foreground = { Color = fg } },
       { Text = ' ' .. text },
-      { Foreground = { Color = dot_color } },
-      { Text = ' \u{2022} ' },
+      { Foreground = { Color = has_bell and dot_color or fg } },
+      { Text = has_bell and '\u{2022}' or ' ' },
     }
   end
 
