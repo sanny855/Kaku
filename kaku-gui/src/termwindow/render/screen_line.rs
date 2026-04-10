@@ -526,17 +526,17 @@ impl crate::TermWindow {
 
                     if self.config.custom_block_glyphs {
                         if let Some(block) = &info.block_key {
-                            let block_metrics = params.render_metrics.block_glyph_metrics();
                             texture.replace(
                                 gl_state
                                     .glyph_cache
                                     .borrow_mut()
-                                    .cached_block(*block, &block_metrics)
+                                    .cached_block(*block, &params.render_metrics)
                                     .context("cached_block")?,
                             );
-                            // Custom glyphs are rendered at natural cell height (without
-                            // line_height scaling) and centered vertically within the cell.
-                            top = params.render_metrics.line_height_y_adjust;
+                            // Custom glyphs don't have the same offsets as computed
+                            // by the shaper, and are rendered relative to the cell
+                            // top left, rather than the baseline.
+                            top = 0.;
                         }
                     }
 

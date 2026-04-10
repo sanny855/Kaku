@@ -462,24 +462,17 @@ impl crate::TermWindow {
         hsv: Option<config::HsbTransform>,
         glyph_color: LinearRgba,
     ) -> anyhow::Result<()> {
-        let block_metrics = params.render_metrics.block_glyph_metrics();
         let sprite = gl_state
             .glyph_cache
             .borrow_mut()
-            .cached_block(block, &block_metrics)?
+            .cached_block(block, &params.render_metrics)?
             .texture_coords();
 
         let mut quad = quads.allocate()?;
         let cell_width = params.render_metrics.cell_size.width as f32;
-        let block_height = block_metrics.cell_size.height as f32;
-        let y_adjust = params.render_metrics.line_height_y_adjust;
+        let cell_height = params.render_metrics.cell_size.height as f32;
         let pos_y = (self.dimensions.pixel_height as f32 / -2.) + params.top_pixel_y;
-        quad.set_position(
-            pos_x,
-            pos_y + y_adjust,
-            pos_x + cell_width,
-            pos_y + y_adjust + block_height,
-        );
+        quad.set_position(pos_x, pos_y, pos_x + cell_width, pos_y + cell_height);
         quad.set_hsv(hsv);
         quad.set_fg_color(glyph_color);
         quad.set_texture(sprite);
