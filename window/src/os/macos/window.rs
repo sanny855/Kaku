@@ -4639,23 +4639,33 @@ impl WindowView {
             // from inside [NSWindow close], which we call while Connection
             // already holds inner.borrow_mut(). A direct borrow_mut here would
             // panic and abort. Matches the window_will_close pattern.
+            // Use try_borrow_mut + move the AppKit display calls INSIDE the
+            // guarded block. When closing a fullscreen window, AppKit fires this
+            // notification synchronously while Connection::with_window_inner
+            // holds inner.borrow_mut(). try_borrow_mut returns Err, so we skip
+            // all work. Calling displayIfNeeded outside the guard triggers draw
+            // callbacks that attempt their own borrow_mut, causing the same
+            // panic-abort (confirmed: nightly 45d7704 still crashed because the
+            // unsafe block was unconditional). Releasing inner before calling
+            // into AppKit lets draw callbacks re-borrow safely.
             if let Ok(mut inner) = this.inner.try_borrow_mut() {
                 inner.live_resizing = true;
                 inner.paint_throttled = false;
                 inner.invalidated = true;
                 inner.events.dispatch(WindowEvent::NeedRepaint);
+                drop(inner);
+                unsafe {
+                    let _: () = msg_send![view_id, setNeedsDisplay: YES];
+                    let ns_window: id = msg_send![view_id, window];
+                    if !ns_window.is_null() {
+                        let _: () = msg_send![ns_window, displayIfNeeded];
+                    }
+                }
             } else {
                 log::warn!(
-                    "will_exit_fullscreen: RefCell already borrowed, \
-                     skipping live_resizing/repaint update"
+                    "will_exit_fullscreen: RefCell already borrowed (window \
+                     closing), skipping display update"
                 );
-            }
-            unsafe {
-                let _: () = msg_send![view_id, setNeedsDisplay: YES];
-                let ns_window: id = msg_send![view_id, window];
-                if !ns_window.is_null() {
-                    let _: () = msg_send![ns_window, displayIfNeeded];
-                }
             }
         }
     }
