@@ -3343,21 +3343,11 @@ fn shell_tokens_are_dangerous(tokens: &[String]) -> bool {
     }
     match cmd {
         // Shell/interpreter invoked with an inline script (-c / -lc / -ic etc.) can run anything.
-        "bash" | "sh" | "zsh" | "fish" | "python" | "python3" => tokens.iter().skip(1).any(|t| {
-            t == "-c" || (t.starts_with('-') && !t.starts_with("--") && t[1..].contains('c'))
-        }),
-        // perl/ruby: -c is syntax-check only (read-only), but -e / --eval is dangerous.
-        "perl" | "ruby" => tokens.iter().skip(1).any(|t| {
-            t == "-e"
-                || t == "--eval"
-                || (t.starts_with('-') && !t.starts_with("--") && t[1..].contains('e'))
-        }),
-        // node: -c / --check is syntax-check only; -e / --eval is dangerous.
-        "node" => tokens.iter().skip(1).any(|t| {
-            t == "-e"
-                || t == "--eval"
-                || (t.starts_with('-') && !t.starts_with("--") && t[1..].contains('e'))
-        }),
+        "bash" | "sh" | "zsh" | "fish" | "python" | "python3" | "perl" | "ruby" | "node" => {
+            tokens.iter().skip(1).any(|t| {
+                t == "-c" || (t.starts_with('-') && !t.starts_with("--") && t[1..].contains('c'))
+            })
+        }
         "rm" => rm_is_dangerous(tokens),
         "find" => find_is_dangerous(tokens),
         "git" => git_is_dangerous(tokens),
