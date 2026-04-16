@@ -674,6 +674,16 @@ impl Pane for LocalPane {
         term.get_semantic_zones()
     }
 
+    fn get_last_command_status(&self) -> Option<i32> {
+        let term = self.terminal.lock();
+        term.get_last_command_status()
+    }
+
+    fn get_last_command_output_start(&self) -> Option<StableRowIndex> {
+        let term = self.terminal.lock();
+        term.get_last_command_output_start()
+    }
+
     async fn search(
         &self,
         pattern: Pattern,

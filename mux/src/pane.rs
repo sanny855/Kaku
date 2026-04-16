@@ -380,6 +380,16 @@ pub trait Pane: Downcast + Send + Sync {
         Ok(vec![])
     }
 
+    /// Returns exit code of the last command from OSC 133 D, if available.
+    fn get_last_command_status(&self) -> Option<i32> {
+        None
+    }
+
+    /// Returns the stable row index where the last command's output started (OSC 133 C).
+    fn get_last_command_output_start(&self) -> Option<StableRowIndex> {
+        None
+    }
+
     /// Returns true if the terminal has grabbed the mouse and wants to
     /// give the embedded application a chance to process events.
     /// In practice this controls whether the gui will perform local

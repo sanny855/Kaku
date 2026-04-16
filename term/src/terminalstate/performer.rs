@@ -954,11 +954,17 @@ impl<'a> Performer<'a> {
             ) => {
                 self.fresh_line();
                 self.pen.set_semantic_type(SemanticType::Prompt);
+                // Reset per-command state so stale exit code + output can't mismatch
+                // between the end of the previous command and the start of the next.
+                self.last_command_status = None;
+                self.last_command_output_start = None;
             }
             OperatingSystemCommand::FinalTermSemanticPrompt(
                 FinalTermSemanticPrompt::StartPrompt(_),
             ) => {
                 self.pen.set_semantic_type(SemanticType::Prompt);
+                self.last_command_status = None;
+                self.last_command_output_start = None;
             }
             OperatingSystemCommand::FinalTermSemanticPrompt(
                 FinalTermSemanticPrompt::MarkEndOfCommandWithFreshLine { .. },
@@ -981,11 +987,16 @@ impl<'a> Performer<'a> {
                 FinalTermSemanticPrompt::MarkEndOfInputAndStartOfOutput { .. },
             ) => {
                 self.pen.set_semantic_type(SemanticType::Output);
+                let screen = self.screen();
+                self.last_command_output_start =
+                    Some(screen.visible_row_to_stable_row(self.cursor.y));
             }
 
             OperatingSystemCommand::FinalTermSemanticPrompt(
-                FinalTermSemanticPrompt::CommandStatus { .. },
-            ) => {}
+                FinalTermSemanticPrompt::CommandStatus { status, .. },
+            ) => {
+                self.last_command_status = Some(status);
+            }
 
             OperatingSystemCommand::SystemNotification(message) => {
                 if let Some(handler) = self.alert_handler.as_mut() {

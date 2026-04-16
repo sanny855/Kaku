@@ -452,6 +452,14 @@ pub struct TerminalState {
     /// applied to lines.
     /// If none, then the default value specified by the config is used.
     bidi_hint: Option<ParagraphDirectionHint>,
+
+    /// Last command exit status from OSC 133 D sequence.
+    /// None if no command has completed yet or shell integration is not active.
+    last_command_status: Option<i32>,
+
+    /// Stable row index where the last command's output started (OSC 133 C).
+    /// Used to extract the output region when building AI context.
+    last_command_output_start: Option<StableRowIndex>,
 }
 
 #[derive(Debug)]
@@ -644,6 +652,8 @@ impl TerminalState {
             bidi_hint: None,
             progress: Progress::default(),
             primary_peek: false,
+            last_command_status: None,
+            last_command_output_start: None,
         }
     }
 
@@ -2916,5 +2926,13 @@ impl TerminalState {
             .last()
             .copied()
             .unwrap_or(self.keyboard_encoding)
+    }
+
+    pub fn get_last_command_status(&self) -> Option<i32> {
+        self.last_command_status
+    }
+
+    pub fn get_last_command_output_start(&self) -> Option<StableRowIndex> {
+        self.last_command_output_start
     }
 }
