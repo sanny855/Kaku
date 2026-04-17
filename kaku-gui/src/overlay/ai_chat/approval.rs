@@ -183,9 +183,7 @@ fn split_shell_segments(command: &str) -> Option<Vec<String>> {
 /// After consuming `<`, skip an input redirection or report unsafe.
 /// Input redirection has no write side-effect, so the target is not
 /// constrained to an allowlist. Process substitution `<(...)` is rejected.
-fn skip_safe_input_redirection(
-    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
-) -> bool {
+fn skip_safe_input_redirection(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> bool {
     if chars.peek() == Some(&'(') {
         return false;
     }

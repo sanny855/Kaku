@@ -522,9 +522,7 @@ impl GuiFrontEnd {
         if window_funcs::take_appearance_queried_before_gui_ready() {
             let real_appearance = front_end.connection.get_appearance();
             if real_appearance != Appearance::Light {
-                startup_trace::mark(
-                    "    config::reload start (real appearance != Light)",
-                );
+                startup_trace::mark("    config::reload start (real appearance != Light)");
                 config::reload();
                 startup_trace::mark("    config::reload done");
             } else {
