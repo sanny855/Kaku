@@ -1038,6 +1038,11 @@ impl Window {
             let _: () = msg_send![*window, setRestorable: NO];
 
             window.setReleasedWhenClosed_(NO);
+            // Opt out of AppKit's Windows menu: on macOS 26 a closed window can
+            // leave a dangling NSWindowRepresentingMenuItem, and a later
+            // setTitle: PAC-faults in _rebuildWindowsMenu. Kaku has its own
+            // tab/window switching, so we don't need the system menu.
+            let _: () = msg_send![*window, setExcludedFromWindowsMenu: YES];
             window.setBackgroundColor_(cocoa::appkit::NSColor::clearColor(nil));
 
             // Tell Cocoa that we output in sRGB, so it handles color space
