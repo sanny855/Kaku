@@ -72,16 +72,24 @@ pub fn parse_scutil_proxy(text: &str) -> Option<String> {
         }
     }
 
-    if https_enabled && !https_host.is_empty() && !https_port.is_empty() {
+    if https_enabled && is_valid_host(&https_host) && is_valid_port(&https_port) {
         return Some(format!("http://{}:{}", https_host, https_port));
     }
-    if http_enabled && !http_host.is_empty() && !http_port.is_empty() {
+    if http_enabled && is_valid_host(&http_host) && is_valid_port(&http_port) {
         return Some(format!("http://{}:{}", http_host, http_port));
     }
-    if socks_enabled && !socks_host.is_empty() && !socks_port.is_empty() {
+    if socks_enabled && is_valid_host(&socks_host) && is_valid_port(&socks_port) {
         return Some(format!("socks5h://{}:{}", socks_host, socks_port));
     }
     None
+}
+
+fn is_valid_port(s: &str) -> bool {
+    s.parse::<u16>().map(|p| p > 0).unwrap_or(false)
+}
+
+fn is_valid_host(s: &str) -> bool {
+    !s.is_empty() && !s.chars().any(|c| c.is_whitespace() || c == '/' || c == ':')
 }
 
 /// Apply `proxy` to `cmd` by setting the standard curl proxy env vars.
@@ -146,6 +154,30 @@ mod tests {
   HTTPEnable : 0
   HTTPSEnable : 0
   SOCKSEnable : 0
+}
+"#;
+        assert_eq!(parse_scutil_proxy(text), None);
+    }
+
+    #[test]
+    fn rejects_invalid_port() {
+        let text = r#"
+<dictionary> {
+  HTTPSEnable : 1
+  HTTPSPort : not-a-number
+  HTTPSProxy : proxy.example.com
+}
+"#;
+        assert_eq!(parse_scutil_proxy(text), None);
+    }
+
+    #[test]
+    fn rejects_host_with_whitespace_or_separator() {
+        let text = r#"
+<dictionary> {
+  HTTPSEnable : 1
+  HTTPSPort : 8443
+  HTTPSProxy : bad host/value
 }
 "#;
         assert_eq!(parse_scutil_proxy(text), None);
