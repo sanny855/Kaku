@@ -3304,6 +3304,24 @@ fn get_window_class() -> &'static Class {
             frame_rect
         }
 
+        /// Override zoom: to clear resize increments during the maximize
+        /// transition. AppKit's zoom: applies setResizeIncrements rounding
+        /// internally BEFORE constrainFrameRect:toScreen: runs, so the
+        /// constrain override alone cannot prevent a small gap at the
+        /// screen edge. We temporarily set increments to (1, 1) around the
+        /// super call so zoom: can land on the screen's visible frame
+        /// exactly, then restore the user's configured increments.
+        /// <https://github.com/tw93/Kaku/issues/131>
+        extern "C" fn kaku_zoom(this: &mut Object, _sel: Sel, sender: id) {
+            unsafe {
+                let saved: NSSize = msg_send![this, resizeIncrements];
+                let unit = NSSize::new(1.0, 1.0);
+                let _: () = msg_send![this, setResizeIncrements: unit];
+                let _: () = msg_send![super(this, class!(NSWindow)), zoom: sender];
+                let _: () = msg_send![this, setResizeIncrements: saved];
+            }
+        }
+
         unsafe {
             cls.add_method(
                 sel!(canBecomeKeyWindow),
@@ -3320,6 +3338,10 @@ fn get_window_class() -> &'static Class {
             cls.add_method(
                 sel!(constrainFrameRect:toScreen:),
                 constrain_frame_rect as extern "C" fn(&mut Object, Sel, NSRect, id) -> NSRect,
+            );
+            cls.add_method(
+                sel!(zoom:),
+                kaku_zoom as extern "C" fn(&mut Object, Sel, id),
             );
         }
 
