@@ -98,7 +98,7 @@ So I built Kaku to be that environment: fast, polished, and ready to work.
 
 **Is there a Windows or Linux version?** Not currently. Kaku is macOS-only for now.
 
-**Can I use transparent windows?** Yes — set `config.window_background_opacity` in `~/.config/kaku/kaku.lua`.
+**Can I use transparent windows?** Yes, set `config.window_background_opacity` in `~/.config/kaku/kaku.lua`.
 
 **The `kaku` command is missing.** Run `/Applications/Kaku.app/Contents/MacOS/kaku init --update-only && exec zsh -l`, then `kaku doctor`.
 
@@ -106,11 +106,11 @@ Full FAQ: [docs/faq.md](docs/faq.md)
 
 ## Docs
 
-- [Keybindings](docs/keybindings.md) — full shortcut reference
-- [Features](docs/features.md) — AI assistant, lazygit, yazi, remote files, shell suite
-- [Configuration](docs/configuration.md) — themes, fonts, custom keybindings, Lua API
-- [CLI Reference](docs/cli.md) — `kaku ai`, `kaku config`, `kaku doctor`, and more
-- [FAQ](docs/faq.md) — common questions and troubleshooting
+- [Keybindings](docs/keybindings.md) - full shortcut reference
+- [Features](docs/features.md) - AI assistant, lazygit, yazi, remote files, shell suite
+- [Configuration](docs/configuration.md) - themes, fonts, custom keybindings, Lua API
+- [CLI Reference](docs/cli.md) - `kaku ai`, `kaku config`, `kaku doctor`, and more
+- [FAQ](docs/faq.md) - common questions and troubleshooting
 
 ## Contributors
 

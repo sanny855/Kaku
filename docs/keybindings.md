@@ -84,7 +84,7 @@ All keybindings use macOS-native modifier keys. `Opt` = Option/Alt, `Ctrl` = Con
 
 ## Custom Keybindings
 
-Add bindings to `~/.config/kaku/kaku.lua` by **appending** to `config.keys`. Do not assign a new table — this would erase Kaku's defaults.
+Add bindings to `~/.config/kaku/kaku.lua` by **appending** to `config.keys`. Do not assign a new table, this would erase Kaku's defaults.
 
 ```lua
 -- ~/.config/kaku/kaku.lua (after loading bundled config)

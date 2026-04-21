@@ -36,7 +36,7 @@ kaku update
 
 ## kaku reset
 
-Reset Kaku's config and state files to defaults. Use with caution — this overwrites `~/.config/kaku/kaku.lua`.
+Reset Kaku's config and state files to defaults. Use with caution, this overwrites `~/.config/kaku/kaku.lua`.
 
 ```bash
 kaku reset

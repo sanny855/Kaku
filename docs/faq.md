@@ -23,7 +23,7 @@ config.copy_on_select = false
 
 ## How do I customize keybindings?
 
-Append to `config.keys` — do not replace it:
+Append to `config.keys`, do not replace it:
 
 ```lua
 config.keys[#config.keys + 1] = {
@@ -124,7 +124,7 @@ The yazi remote-files feature (`Cmd+Shift+R`) is designed for SSH sessions and m
 
 ## The `y` shell wrapper doesn't sync my directory on exit.
 
-Make sure the Kaku fish/zsh shell integration is sourced. Check with `kaku doctor`. The `y` wrapper requires the shell init to be loaded — a bare `yazi` call will not sync the directory.
+Make sure the Kaku fish/zsh shell integration is sourced. Check with `kaku doctor`. The `y` wrapper requires the shell init to be loaded. A bare `yazi` call will not sync the directory.
 
 ## Homebrew can't find the binary / wrong Kaku gets updated.
 
