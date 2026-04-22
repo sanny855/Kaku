@@ -5,6 +5,7 @@ use super::*;
 mod c0;
 use bitflags::bitflags;
 mod c1;
+mod core_emulation;
 mod csi;
 // mod selection; FIXME: port to render layer
 use crate::color::ColorPalette;

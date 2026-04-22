@@ -798,7 +798,11 @@ pub(crate) fn build_visible_snapshot_message(ctx: &TerminalContext) -> Option<Ap
 
 #[cfg(test)]
 mod tests {
-    use super::shell_command_requires_approval;
+    use super::{
+        approval_summary, build_visible_snapshot_message, shell_command_requires_approval,
+    };
+    use crate::overlay::ai_chat::{ChatPalette, TerminalContext};
+    use termwiz::color::SrgbaTuple;
 
     // Safe: stderr redirected to /dev/null, whole pipeline read-only.
     #[test]
@@ -856,5 +860,233 @@ mod tests {
     #[test]
     fn plain_write_redirect_requires_approval() {
         assert!(shell_command_requires_approval("cat foo > bar"));
+    }
+
+    // ─── Additional shell_command_requires_approval tests ────────────────────
+
+    #[test]
+    fn rm_requires_approval() {
+        assert!(shell_command_requires_approval("rm -rf /tmp/old"));
+    }
+
+    #[test]
+    fn git_reset_hard_requires_approval() {
+        assert!(shell_command_requires_approval("git reset --hard HEAD~1"));
+    }
+
+    #[test]
+    fn mv_requires_approval() {
+        assert!(shell_command_requires_approval("mv foo.txt bar.txt"));
+    }
+
+    #[test]
+    fn grep_read_only_no_approval() {
+        assert!(!shell_command_requires_approval("grep -r 'pattern' src/"));
+    }
+
+    #[test]
+    fn cat_no_approval() {
+        assert!(!shell_command_requires_approval("cat README.md"));
+    }
+
+    #[test]
+    fn git_log_no_approval() {
+        assert!(!shell_command_requires_approval("git log --oneline -10"));
+    }
+
+    #[test]
+    fn git_status_no_approval() {
+        assert!(!shell_command_requires_approval("git status"));
+    }
+
+    #[test]
+    fn ls_piped_to_grep_no_approval() {
+        assert!(!shell_command_requires_approval("ls -la | grep Cargo"));
+    }
+
+    #[test]
+    fn chained_safe_commands_no_approval() {
+        assert!(!shell_command_requires_approval(
+            "cat Cargo.toml && echo done"
+        ));
+    }
+
+    // ─── approval_summary ────────────────────────────────────────────────────
+
+    #[test]
+    fn read_only_tools_return_none() {
+        let empty = serde_json::json!({});
+        for tool in &[
+            "fs_read",
+            "fs_list",
+            "fs_search",
+            "pwd",
+            "shell_poll",
+            "memory_read",
+        ] {
+            assert!(
+                approval_summary(tool, &empty).is_none(),
+                "{} should not require approval",
+                tool
+            );
+        }
+    }
+
+    #[test]
+    fn fs_write_requires_approval_and_mentions_path() {
+        let args = serde_json::json!({"path": "/tmp/out.txt"});
+        let summary = approval_summary("fs_write", &args);
+        assert!(summary.is_some());
+        assert!(summary.unwrap().contains("out.txt"));
+    }
+
+    #[test]
+    fn fs_patch_requires_approval() {
+        let args = serde_json::json!({"path": "src/main.rs"});
+        assert!(approval_summary("fs_patch", &args).is_some());
+    }
+
+    #[test]
+    fn fs_delete_requires_approval() {
+        let args = serde_json::json!({"path": "/tmp/stale.log"});
+        assert!(approval_summary("fs_delete", &args).is_some());
+    }
+
+    #[test]
+    fn fs_mkdir_requires_approval() {
+        let args = serde_json::json!({"path": "/tmp/newdir"});
+        assert!(approval_summary("fs_mkdir", &args).is_some());
+    }
+
+    #[test]
+    fn shell_bg_requires_approval() {
+        let args = serde_json::json!({"command": "long_running_task"});
+        assert!(approval_summary("shell_bg", &args).is_some());
+    }
+
+    #[test]
+    fn http_get_no_approval() {
+        let args = serde_json::json!({"method": "GET", "url": "https://example.com/api"});
+        assert!(approval_summary("http_request", &args).is_none());
+    }
+
+    #[test]
+    fn http_post_requires_approval() {
+        let args = serde_json::json!({"method": "POST", "url": "https://api.example.com/data"});
+        let summary = approval_summary("http_request", &args);
+        assert!(summary.is_some());
+        assert!(summary.unwrap().contains("POST"));
+    }
+
+    #[test]
+    fn http_delete_requires_approval() {
+        let args = serde_json::json!({"method": "DELETE", "url": "https://api.example.com/r/1"});
+        assert!(approval_summary("http_request", &args).is_some());
+    }
+
+    // ─── build_visible_snapshot_message ──────────────────────────────────────
+
+    fn test_ctx(
+        visible: &[&str],
+        exit_code: Option<i32>,
+        output: Option<&[&str]>,
+    ) -> TerminalContext {
+        let palette = ChatPalette {
+            bg: SrgbaTuple::default(),
+            fg: SrgbaTuple::default(),
+            accent: SrgbaTuple::default(),
+            border: SrgbaTuple::default(),
+            user_header: SrgbaTuple::default(),
+            user_text: SrgbaTuple::default(),
+            ai_text: SrgbaTuple::default(),
+            selection_fg: SrgbaTuple::default(),
+            selection_bg: SrgbaTuple::default(),
+        };
+        TerminalContext {
+            cwd: "/tmp".to_string(),
+            visible_lines: visible.iter().map(|s| s.to_string()).collect(),
+            tab_snapshot: String::new(),
+            selected_text: String::new(),
+            colors: palette,
+            last_exit_code: exit_code,
+            last_command_output: output.map(|v| v.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    fn content(msg: &crate::ai_client::ApiMessage) -> &str {
+        msg.0["content"].as_str().unwrap_or("")
+    }
+
+    #[test]
+    fn empty_visible_lines_returns_none() {
+        let ctx = test_ctx(&[], None, None);
+        assert!(build_visible_snapshot_message(&ctx).is_none());
+    }
+
+    #[test]
+    fn blank_only_lines_return_none() {
+        let ctx = test_ctx(&["", "   ", "\t"], None, None);
+        assert!(build_visible_snapshot_message(&ctx).is_none());
+    }
+
+    #[test]
+    fn snapshot_prefixes_each_line_with_term() {
+        let ctx = test_ctx(&["$ cargo build", "error: something"], None, None);
+        let msg = build_visible_snapshot_message(&ctx).expect("should produce message");
+        let body = content(&msg);
+        assert!(body.contains("TERM|"), "each line must be prefixed TERM|");
+        let term_lines: Vec<&str> = body.lines().filter(|l| l.starts_with("TERM| ")).collect();
+        assert_eq!(
+            term_lines,
+            vec!["TERM| $ cargo build", "TERM| error: something"]
+        );
+        assert!(
+            body.contains("untrusted"),
+            "snapshot must be labelled untrusted"
+        );
+        assert!(body.contains("End of terminal snapshot"));
+    }
+
+    #[test]
+    fn successful_exit_omits_error_context() {
+        let ctx = test_ctx(&["$ echo hi", "hi"], Some(0), Some(&["hi"]));
+        let msg = build_visible_snapshot_message(&ctx).expect("should produce message");
+        assert!(!content(&msg).contains("failed with exit code"));
+    }
+
+    #[test]
+    fn failed_exit_appends_out_lines() {
+        let ctx = test_ctx(
+            &["$ cargo build"],
+            Some(1),
+            Some(&["error[E0308]: mismatched types"]),
+        );
+        let msg = build_visible_snapshot_message(&ctx).expect("should produce message");
+        let body = content(&msg);
+        assert!(body.contains("failed with exit code 1"));
+        assert!(body.contains("OUT|"), "error lines must be prefixed OUT|");
+        assert!(body.contains("mismatched types"));
+    }
+
+    #[test]
+    fn nonzero_exit_with_empty_output_does_not_crash() {
+        let ctx = test_ctx(&["$ bad_cmd"], Some(127), Some(&[]));
+        assert!(build_visible_snapshot_message(&ctx).is_some());
+    }
+
+    #[test]
+    fn snapshot_is_capped_at_twenty_lines() {
+        let lines: Vec<&str> = (0..30).map(|_| "line").collect();
+        let ctx = test_ctx(&lines, None, None);
+        let msg = build_visible_snapshot_message(&ctx).expect("should produce message");
+        let count = content(&msg)
+            .lines()
+            .filter(|l| l.starts_with("TERM|"))
+            .count();
+        assert!(
+            count <= 20,
+            "snapshot must be capped at 20 lines, got {}",
+            count
+        );
     }
 }

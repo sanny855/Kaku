@@ -2876,4 +2876,130 @@ mod test {
     fn tab_is_send_and_sync() {
         assert_send_and_sync::<Tab>();
     }
+
+    // ─── SplitDirectionAndSize unit tests ─────────────────────────────────────
+
+    fn px_size(rows: usize, cols: usize) -> TerminalSize {
+        TerminalSize {
+            rows,
+            cols,
+            pixel_height: rows * 16,
+            pixel_width: cols * 8,
+            dpi: 96,
+        }
+    }
+
+    #[test]
+    fn horizontal_split_width_is_cols_plus_gutter() {
+        config::use_test_configuration();
+        let ds = SplitDirectionAndSize {
+            direction: SplitDirection::Horizontal,
+            first: px_size(24, 40),
+            second: px_size(24, 40),
+        };
+        // default split_pane_gap=0 → col_gutter=(1+2*0).max(1)=1
+        assert_eq!(ds.width(), 40 + 40 + split_col_gutter());
+    }
+
+    #[test]
+    fn horizontal_split_height_equals_first_rows() {
+        config::use_test_configuration();
+        let ds = SplitDirectionAndSize {
+            direction: SplitDirection::Horizontal,
+            first: px_size(24, 40),
+            second: px_size(24, 40),
+        };
+        assert_eq!(ds.height(), 24);
+    }
+
+    #[test]
+    fn vertical_split_height_is_rows_plus_gutter() {
+        config::use_test_configuration();
+        let ds = SplitDirectionAndSize {
+            direction: SplitDirection::Vertical,
+            first: px_size(12, 80),
+            second: px_size(11, 80),
+        };
+        assert_eq!(ds.height(), 12 + 11 + split_row_gutter());
+    }
+
+    #[test]
+    fn vertical_split_width_equals_first_cols() {
+        config::use_test_configuration();
+        let ds = SplitDirectionAndSize {
+            direction: SplitDirection::Vertical,
+            first: px_size(12, 80),
+            second: px_size(12, 80),
+        };
+        assert_eq!(ds.width(), 80);
+    }
+
+    #[test]
+    fn horizontal_second_pane_offset_is_first_cols_plus_gutter() {
+        config::use_test_configuration();
+        let ds = SplitDirectionAndSize {
+            direction: SplitDirection::Horizontal,
+            first: px_size(24, 40),
+            second: px_size(24, 20),
+        };
+        assert_eq!(ds.width(), 40 + split_col_gutter() + 20);
+    }
+
+    #[test]
+    fn vertical_second_pane_offset_is_first_rows_plus_gutter() {
+        config::use_test_configuration();
+        let ds = SplitDirectionAndSize {
+            direction: SplitDirection::Vertical,
+            first: px_size(10, 80),
+            second: px_size(10, 80),
+        };
+        assert_eq!(ds.height(), 10 + split_row_gutter() + 10);
+    }
+
+    #[test]
+    fn size_pixel_dimensions_match_cell_grid() {
+        config::use_test_configuration();
+        let ds = SplitDirectionAndSize {
+            direction: SplitDirection::Horizontal,
+            first: px_size(24, 40),
+            second: px_size(24, 40),
+        };
+        let sz = ds.size();
+        assert_eq!(sz.pixel_width, 8 * sz.cols);
+        assert_eq!(sz.pixel_height, 16 * sz.rows);
+    }
+
+    #[test]
+    fn asymmetric_split_cols_are_preserved() {
+        config::use_test_configuration();
+        let ds = SplitDirectionAndSize {
+            direction: SplitDirection::Horizontal,
+            first: px_size(24, 39),
+            second: px_size(24, 40),
+        };
+        assert_eq!(ds.width(), 39 + split_col_gutter() + 40);
+        assert_eq!(ds.height(), 24);
+    }
+
+    #[test]
+    fn single_column_panes_produce_valid_size() {
+        config::use_test_configuration();
+        let ds = SplitDirectionAndSize {
+            direction: SplitDirection::Horizontal,
+            first: px_size(24, 1),
+            second: px_size(24, 1),
+        };
+        assert_eq!(ds.width(), 1 + split_col_gutter() + 1);
+    }
+
+    #[test]
+    fn single_row_panes_produce_valid_vertical_size() {
+        config::use_test_configuration();
+        let ds = SplitDirectionAndSize {
+            direction: SplitDirection::Vertical,
+            first: px_size(1, 80),
+            second: px_size(1, 80),
+        };
+        assert_eq!(ds.height(), 1 + split_row_gutter() + 1);
+    }
 }
