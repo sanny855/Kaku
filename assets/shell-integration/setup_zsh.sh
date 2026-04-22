@@ -1169,13 +1169,21 @@ unset -f _kaku_has_autosuggest_system 2>/dev/null
 
 # Smart Tab behavior:
 # - Use completion while typing arguments/path-like tokens
-# - Accept inline suggestion first only for the first command token
+# - For the first command token, prefer completion by default so Tab reveals
+#   candidates instead of always accepting recent-history suggestions
+# - Set KAKU_TAB_ACCEPT_SUGGEST_FIRST=1 to restore suggestion-first behavior
 # - Only claim Tab inside Kaku sessions unless explicitly disabled
 if [[ -z "\${KAKU_SMART_TAB_DISABLE:-}" ]] && [[ "\${TERM_PROGRAM:-}" == "Kaku" ]]; then
     _kaku_tab_widget() {
         emulate -L zsh
 
         local has_suggestion=0
+        local prefer_suggestion_first=0
+
+        if [[ "\${KAKU_TAB_ACCEPT_SUGGEST_FIRST:-0}" == "1" ]]; then
+            prefer_suggestion_first=1
+        fi
+
         # When Kaku defers autosuggestions to an external provider, keep Tab
         # as completion-only to avoid widget recursion.
         if [[ "\${_kaku_external_autosuggest_provider:-0}" != "1" ]] && (( \${+widgets[autosuggest-accept]} )) && [[ -n "\${POSTDISPLAY:-}" ]]; then
@@ -1193,7 +1201,7 @@ if [[ -z "\${KAKU_SMART_TAB_DISABLE:-}" ]] && [[ "\${TERM_PROGRAM:-}" == "Kaku" 
             return
         fi
 
-        if (( has_suggestion )); then
+        if (( has_suggestion )) && (( prefer_suggestion_first )); then
             zle autosuggest-accept
         else
             zle expand-or-complete
@@ -1694,15 +1702,14 @@ fi
 # 2. No other autosuggest system is active (to avoid widget wrapping conflicts)
 if ! (( ${+functions[_zsh_autosuggest_start]} )) && [[ "${_kaku_external_autosuggest_provider:-0}" != "1" ]] && [[ -f "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then
     source "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh"
-    # Smart Tab: accept inline autosuggestion if present, otherwise run completion.
-    # Avoids running completion immediately after accepting a suggestion, which can
-    # introduce unexpected spacing for some command completers.
+    # Smart Tab: completion-first by default, optional suggestion-first via
+    # KAKU_TAB_ACCEPT_SUGGEST_FIRST=1.
     # Keep this widget out of autosuggestions rebinding, otherwise POSTDISPLAY is
     # cleared before our condition check and Tab always falls back to completion.
     typeset -ga ZSH_AUTOSUGGEST_IGNORE_WIDGETS
     ZSH_AUTOSUGGEST_IGNORE_WIDGETS+=(kaku_tab_accept_or_complete)
     kaku_tab_accept_or_complete() {
-        if [[ -n "$POSTDISPLAY" ]]; then
+        if [[ "${KAKU_TAB_ACCEPT_SUGGEST_FIRST:-0}" == "1" ]] && [[ -n "$POSTDISPLAY" ]]; then
             zle autosuggest-accept
         else
             zle expand-or-complete
