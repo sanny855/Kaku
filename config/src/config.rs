@@ -2525,11 +2525,11 @@ const fn default_reverse_video_cursor_min_contrast() -> f32 {
 
 #[derive(FromDynamic, ToDynamic, Clone, Copy, Debug)]
 pub struct WindowPadding {
-    #[dynamic(try_from = "crate::units::PixelUnit", default = "default_one_cell")]
+    #[dynamic(try_from = "crate::units::PixelUnit", default = "default_half_cell")]
     pub left: Dimension,
     #[dynamic(try_from = "crate::units::PixelUnit", default = "default_half_cell")]
     pub top: Dimension,
-    #[dynamic(try_from = "crate::units::PixelUnit", default = "default_one_cell")]
+    #[dynamic(try_from = "crate::units::PixelUnit", default = "default_half_cell")]
     pub right: Dimension,
     #[dynamic(try_from = "crate::units::PixelUnit", default = "default_half_cell")]
     pub bottom: Dimension,
@@ -2538,8 +2538,8 @@ pub struct WindowPadding {
 impl Default for WindowPadding {
     fn default() -> Self {
         Self {
-            left: default_one_cell(),
-            right: default_one_cell(),
+            left: default_half_cell(),
+            right: default_half_cell(),
             top: default_half_cell(),
             bottom: default_half_cell(),
         }
