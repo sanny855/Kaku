@@ -1,6 +1,6 @@
 use crate::ai_client::{AiClient, ApiMessage};
 use crate::ai_conversations;
-use crate::ai_tools::memory_file_path;
+use crate::soul::memory_path as memory_file_path;
 use crate::overlay::ai_chat::{approval_summary, StreamMsg};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;

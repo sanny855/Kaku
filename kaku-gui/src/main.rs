@@ -96,6 +96,7 @@ mod ai_gemini;
 mod ai_remote;
 mod ai_state;
 mod ai_tools;
+mod soul;
 mod colorease;
 mod commands;
 mod customglyph;

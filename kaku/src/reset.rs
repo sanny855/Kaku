@@ -278,6 +278,21 @@ mod imp {
             "removed Kaku backup directory",
             &mut report,
         )?;
+        remove_dir_if_exists(
+            config_home().join("soul"),
+            "removed Kaku soul directory",
+            &mut report,
+        )?;
+        remove_file_if_exists(
+            config_home().join("ai_chat_memory.md"),
+            "removed legacy AI chat memory file",
+            &mut report,
+        )?;
+        remove_file_if_exists(
+            config_home().join("ai_chat_onboarded"),
+            "removed AI chat onboarding flag",
+            &mut report,
+        )?;
         remove_empty_kaku_config_dir(&mut report)?;
 
         report.print();

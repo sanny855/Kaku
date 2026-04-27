@@ -514,6 +514,9 @@ impl App {
                 }
             })
             .collect();
+        // Run soul migration on every init (idempotent sentinel-guarded).
+        crate::soul::migrate_if_needed();
+
         // Onboarding: fire when neither the memory file nor the flag file exist.
         // Both files live under ~/.config/kaku/; presence of either means the user
         // has been through setup before (memory exists) or has already seen the
@@ -1632,7 +1635,25 @@ impl App {
             if self.stream_pending_err.is_none() {
                 let client = self.client.clone();
                 let msgs = self.collect_persisted_messages();
+
+                // One-shot soul bootstrap: split the first user reply into
+                // SOUL/STYLE/SKILL. Runs only if not already bootstrapped.
+                let bootstrap_reply: Option<String> =
+                    if !crate::soul::bootstrapped_path().exists() {
+                        self.messages
+                            .iter()
+                            .find(|m| {
+                                m.role == Role::User && !m.is_context && !m.content.is_empty()
+                            })
+                            .map(|m| m.content.clone())
+                    } else {
+                        None
+                    };
+
                 std::thread::spawn(move || {
+                    if let Some(reply) = bootstrap_reply {
+                        crate::soul::bootstrap_from_onboarding(&client, &reply);
+                    }
                     maybe_extract_memories(&client, &msgs);
                 });
             }

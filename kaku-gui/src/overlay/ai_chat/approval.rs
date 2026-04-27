@@ -708,7 +708,13 @@ fn has_output_flag(tokens: &[String], flags: &[&str]) -> bool {
 /// discount. Dynamic context is injected as a separate user message via
 /// `build_environment_message`.
 pub(crate) fn build_system_prompt() -> String {
-    include_str!("prompt.txt").to_string()
+    let base = include_str!("prompt.txt");
+    let identity = crate::soul::load_for_prompt();
+    if identity.is_empty() {
+        base.to_string()
+    } else {
+        format!("{}\n\n---\n\nUSER IDENTITY (read-only, user-authored):\n{}", base, identity)
+    }
 }
 
 /// Build a user message that carries per-request environment context.
@@ -736,6 +742,11 @@ pub(crate) fn build_environment_message(ctx: &TerminalContext) -> ApiMessage {
     }
     if !ctx.cwd.is_empty() {
         s.push_str(&format!("Current directory: {}\n", ctx.cwd));
+    }
+
+    let memory = crate::soul::load_memory_for_env();
+    if !memory.is_empty() {
+        s.push_str(&format!("\nPersistent memory (curator-managed):\n{}\n", memory));
     }
 
     ApiMessage::user(format!(

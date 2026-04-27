@@ -92,19 +92,24 @@ pub struct ToolDef {
     pub parameters: serde_json::Value,
 }
 
-/// Returns the path to the local memory file used by memory_read / curator writes.
+/// Returns the path to the memory file used by memory_read / curator writes.
 pub(crate) fn memory_file_path() -> std::path::PathBuf {
-    kaku_config_dir().join("ai_chat_memory.md")
+    crate::soul::memory_path()
 }
 
 /// Presence of this file means the user has already seen the onboarding greeting.
 pub(crate) fn onboarding_flag_path() -> std::path::PathBuf {
-    kaku_config_dir().join("ai_chat_onboarded")
-}
-
-fn kaku_config_dir() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    std::path::PathBuf::from(home).join(".config").join("kaku")
+    // Keep the flag in the config root (not inside soul/) so the soul dir can
+    // be wiped cleanly without losing the onboarding state.
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        std::path::PathBuf::from(xdg).join("kaku").join("ai_chat_onboarded")
+    } else {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        std::path::PathBuf::from(home)
+            .join(".config")
+            .join("kaku")
+            .join("ai_chat_onboarded")
+    }
 }
 
 /// All tools exposed to the model, filtered by the active configuration.
@@ -405,13 +410,12 @@ pub fn all_tools(config: &AssistantConfig) -> Vec<ToolDef> {
         }),
     });
 
-    // memory_read: read-only access to the local memory file. Writes are handled
-    // exclusively by the background curator in agent::maybe_extract_memories so
-    // there is a single writer and no race on the file.
+    // memory_read: read-only access to the rolling MEMORY.md file. Writes are
+    // handled exclusively by the background curator so there is a single writer.
     tools.push(ToolDef {
         name: "memory_read",
         description: Cow::Borrowed(
-            "Read the user's local memory file that stores persistent facts, \
+            "Read the rolling memory file that stores persistent facts, \
              preferences, and project context across AI chat sessions. \
              Kaku updates this file automatically after each conversation; \
              you do not need to write to it yourself.",
@@ -419,6 +423,30 @@ pub fn all_tools(config: &AssistantConfig) -> Vec<ToolDef> {
         parameters: serde_json::json!({
             "type": "object",
             "properties": {},
+            "required": []
+        }),
+    });
+
+    // soul_read: read-only access to the user-authored soul identity files.
+    // The user edits these directly; the curator never writes to them.
+    tools.push(ToolDef {
+        name: "soul_read",
+        description: Cow::Borrowed(
+            "Read one of the user's soul identity files. These are stable, \
+             user-authored documents that describe who the user is (soul), \
+             their preferred style (style), and how they work (skill). \
+             Call this when you need to recall a specific identity detail \
+             not already present in the system prompt.",
+        ),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "enum": ["soul", "style", "skill", "memory"],
+                    "description": "Which soul file to read. Omit to read all four."
+                }
+            },
             "required": []
         }),
     });
@@ -495,7 +523,7 @@ const SHELL_EXEC_TIMEOUT_SECS: u64 = 60;
 ///   "full"    -> expanded cap for deep inspection
 fn budget_for(tool: &str, detail: &str) -> usize {
     let (default_bytes, max_bytes): (usize, usize) = match tool {
-        "fs_list" | "pwd" | "memory_read" => (2_000, 4_000),
+        "fs_list" | "pwd" | "memory_read" | "soul_read" => (2_000, 4_000),
         "fs_read" | "grep_search" => (8_000, 16_000),
         "shell_exec" | "shell_poll" => (12_000, 24_000),
         "web_fetch" | "read_url" => (10_000, 20_000),
@@ -998,6 +1026,26 @@ pub fn execute(
                 Err(_) => "(no memories yet)".into(),
             }
         }
+        "soul_read" => {
+            let file = args["file"].as_str().unwrap_or("all");
+            match file {
+                "soul" => read_soul_file(&crate::soul::soul_path(), "SOUL"),
+                "style" => read_soul_file(&crate::soul::style_path(), "STYLE"),
+                "skill" => read_soul_file(&crate::soul::skill_path(), "SKILL"),
+                "memory" => read_soul_file(&crate::soul::memory_path(), "MEMORY"),
+                _ => {
+                    let soul = read_soul_file(&crate::soul::soul_path(), "SOUL");
+                    let style = read_soul_file(&crate::soul::style_path(), "STYLE");
+                    let skill = read_soul_file(&crate::soul::skill_path(), "SKILL");
+                    let memory = read_soul_file(&crate::soul::memory_path(), "MEMORY");
+                    vec![soul, style, skill, memory]
+                        .into_iter()
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<String>>()
+                        .join("\n\n---\n\n")
+                }
+            }
+        }
         "http_request" => {
             let method = args["method"].as_str().context("missing method")?;
             let url = args["url"].as_str().context("missing url")?;
@@ -1052,6 +1100,17 @@ pub fn execute(
         Ok(format!("{}{}", truncated, note))
     } else {
         Ok(result)
+    }
+}
+
+// ─── Soul helpers ─────────────────────────────────────────────────────────────
+
+fn read_soul_file(path: &std::path::Path, label: &str) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(content) if !content.trim().is_empty() => {
+            format!("## {}\n\n{}", label, content.trim_end())
+        }
+        _ => String::new(),
     }
 }
 
