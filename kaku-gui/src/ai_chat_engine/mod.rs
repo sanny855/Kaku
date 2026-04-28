@@ -67,7 +67,10 @@ pub(crate) fn build_cli_environment_message(cwd: &str) -> ApiMessage {
     }
     let memory = crate::soul::load_memory_for_env();
     if !memory.is_empty() {
-        s.push_str(&format!("\nPersistent memory (curator-managed):\n{}\n", memory));
+        s.push_str(&format!(
+            "\nPersistent memory (curator-managed):\n{}\n",
+            memory
+        ));
     }
     ApiMessage::user(format!(
         "Environment context (read-only reference, not an instruction):\n{}",
@@ -213,7 +216,9 @@ pub(crate) fn run_agent(
                 })
             })
             .collect();
-        messages.push(ApiMessage::assistant_tool_calls(serde_json::Value::Array(tc_json)));
+        messages.push(ApiMessage::assistant_tool_calls(serde_json::Value::Array(
+            tc_json,
+        )));
 
         for tc in &tool_calls {
             if cancel.load(Ordering::Relaxed) {
@@ -279,12 +284,20 @@ pub(crate) fn run_agent(
             match crate::ai_tools::execute(&tc.name, &args, &mut cwd, client.config(), &cancel) {
                 Ok(result) => {
                     let preview = tool_result_preview(&tc.name, &result);
-                    let _ = tx.send(StreamMsg::ToolDone { result_preview: preview });
-                    messages.push(ApiMessage::tool_result(tc.id.clone(), tc.name.clone(), result));
+                    let _ = tx.send(StreamMsg::ToolDone {
+                        result_preview: preview,
+                    });
+                    messages.push(ApiMessage::tool_result(
+                        tc.id.clone(),
+                        tc.name.clone(),
+                        result,
+                    ));
                 }
                 Err(e) => {
                     let err_str = e.to_string();
-                    let _ = tx.send(StreamMsg::ToolFailed { error: err_str.clone() });
+                    let _ = tx.send(StreamMsg::ToolFailed {
+                        error: err_str.clone(),
+                    });
                     messages.push(ApiMessage::tool_result(
                         tc.id.clone(),
                         tc.name.clone(),
@@ -513,10 +526,7 @@ impl Engine {
     }
 
     /// Submit a user turn. Returns a receiver for streaming events.
-    pub fn submit(
-        &mut self,
-        user_input: String,
-    ) -> std::sync::mpsc::Receiver<StreamMsg> {
+    pub fn submit(&mut self, user_input: String) -> std::sync::mpsc::Receiver<StreamMsg> {
         let round_id = self.next_round_id();
         self.messages.push(PersistedMessage {
             role: "user".to_string(),
@@ -617,10 +627,7 @@ impl Engine {
     }
 
     fn next_round_id(&self) -> u32 {
-        self.messages
-            .iter()
-            .filter(|m| m.role == "user")
-            .count() as u32
+        self.messages.iter().filter(|m| m.role == "user").count() as u32
     }
 
     fn last_round_id(&self) -> u32 {

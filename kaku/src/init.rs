@@ -136,9 +136,8 @@ exit 127
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false)
         {
-            fs::remove_file(&k_path).with_context(|| {
-                format!("remove legacy symlink k wrapper {}", k_path.display())
-            })?;
+            fs::remove_file(&k_path)
+                .with_context(|| format!("remove legacy symlink k wrapper {}", k_path.display()))?;
         }
 
         let preferred_k_bin = resolve_preferred_k_bin()

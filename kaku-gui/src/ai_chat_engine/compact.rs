@@ -73,10 +73,7 @@ pub(crate) fn micro_compact(
         }
 
         if let Some(obj) = msg.0.as_object_mut() {
-            obj.insert(
-                "content".to_string(),
-                serde_json::Value::String(compacted),
-            );
+            obj.insert("content".to_string(), serde_json::Value::String(compacted));
         }
     }
 }

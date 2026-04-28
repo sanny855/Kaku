@@ -269,8 +269,12 @@ fn tab_multi_pane_title(tab_id: TabId) -> Option<String> {
     }
     let mut parts: Vec<String> = Vec::new();
     for pos in panes.iter() {
-        let Some(real_pane) = mux.get_pane(pos.pane.pane_id()) else { continue };
-        let Some(cwd) = real_pane.get_current_working_dir(CachePolicy::AllowStale) else { continue };
+        let Some(real_pane) = mux.get_pane(pos.pane.pane_id()) else {
+            continue;
+        };
+        let Some(cwd) = real_pane.get_current_working_dir(CachePolicy::AllowStale) else {
+            continue;
+        };
         let path_str = cwd.path().trim_end_matches('/');
         if path_str.is_empty() {
             continue;
@@ -280,7 +284,9 @@ fn tab_multi_pane_title(tab_id: TabId) -> Option<String> {
             .file_name()
             .and_then(|n| n.to_str())
             .or_else(|| path.to_str())
-        else { continue };
+        else {
+            continue;
+        };
         let parent = path
             .parent()
             .and_then(|p| p.file_name())

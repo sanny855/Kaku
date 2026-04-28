@@ -935,19 +935,14 @@ impl App {
             self.input_cursor,
             self.input_wrap_width(),
         );
-        layout
-            .rows
-            .len()
-            .min(MAX_INPUT_VISIBLE_ROWS)
-            .max(1)
+        layout.rows.len().min(MAX_INPUT_VISIBLE_ROWS).max(1)
     }
 
     /// Total visible rows for the message area. Shrinks when the input
     /// box grows so the chrome (top border + separator + input + bottom
     /// border) always stays inside `self.rows`.
     fn msg_area_height(&self) -> usize {
-        self.rows
-            .saturating_sub(3 + self.input_visible_rows())
+        self.rows.saturating_sub(3 + self.input_visible_rows())
     }
 }
 
@@ -1449,12 +1444,19 @@ impl App {
         if raw_input == "/model" || raw_input.starts_with("/model ") {
             self.input.clear();
             self.input_cursor = 0;
-            let arg = raw_input.strip_prefix("/model").unwrap_or("").trim().to_string();
+            let arg = raw_input
+                .strip_prefix("/model")
+                .unwrap_or("")
+                .trim()
+                .to_string();
             self.cmd_model(if arg.is_empty() { None } else { Some(arg) });
             return;
         }
         // /btw <question>: transient side question, not saved to history
-        if let Some(question) = raw_input.strip_prefix("/btw ").map(|s| s.trim().to_string()) {
+        if let Some(question) = raw_input
+            .strip_prefix("/btw ")
+            .map(|s| s.trim().to_string())
+        {
             if !question.is_empty() {
                 self.input.clear();
                 self.input_cursor = 0;
@@ -1528,7 +1530,16 @@ impl App {
         };
 
         std::thread::spawn(move || {
-            run_agent(client, model, initial_messages, tools, cwd, conv_id, cancel, tx);
+            run_agent(
+                client,
+                model,
+                initial_messages,
+                tools,
+                cwd,
+                conv_id,
+                cancel,
+                tx,
+            );
         });
     }
 
@@ -1887,7 +1898,11 @@ impl App {
         }
         let mut out = String::new();
         for m in &msgs {
-            let header = if m.role == "user" { "**User**" } else { "**Assistant**" };
+            let header = if m.role == "user" {
+                "**User**"
+            } else {
+                "**Assistant**"
+            };
             out.push_str(header);
             out.push_str("\n\n");
             out.push_str(&m.content);
@@ -1953,10 +1968,7 @@ impl App {
         } else {
             cfg.chat_model_choices.join(", ")
         };
-        let web_search = cfg
-            .web_search_provider
-            .as_deref()
-            .unwrap_or("disabled");
+        let web_search = cfg.web_search_provider.as_deref().unwrap_or("disabled");
         let text = format!(
             "provider          {provider}\n\
              chat_model        {model}\n\
@@ -2012,8 +2024,12 @@ impl App {
         }
         // Mark the user btw message as context so it's excluded from persistence
         // and future API history.
-        self.messages
-            .push(Message::text(Role::User, format!("/btw {}", question), true, true));
+        self.messages.push(Message::text(
+            Role::User,
+            format!("/btw {}", question),
+            true,
+            true,
+        ));
         self.display_lines_dirty = true;
 
         // Build context including the btw sentinel
@@ -2041,7 +2057,16 @@ impl App {
         let conv_id = self.active_id.clone();
 
         std::thread::spawn(move || {
-            run_agent(client, model, initial_messages, vec![], cwd, conv_id, cancel, tx);
+            run_agent(
+                client,
+                model,
+                initial_messages,
+                vec![],
+                cwd,
+                conv_id,
+                cancel,
+                tx,
+            );
         });
     }
 

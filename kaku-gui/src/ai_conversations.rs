@@ -345,11 +345,10 @@ pub fn update_summary(id: &str, summary: &str) -> Result<()> {
 pub fn write_cwd_index(cwd: &str, conv_id: &str) -> Result<()> {
     let dir = conversations_dir()?;
     let path = dir.join("cwd_index.json");
-    let mut map: std::collections::HashMap<String, String> =
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+    let mut map: std::collections::HashMap<String, String> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
     map.insert(cwd.to_string(), conv_id.to_string());
     std::fs::create_dir_all(&dir)?;
     let json = serde_json::to_string_pretty(&map)?;
@@ -362,11 +361,10 @@ pub fn write_cwd_index(cwd: &str, conv_id: &str) -> Result<()> {
 pub fn resolve_or_create_conv_for_cwd(cwd: &str) -> Result<String> {
     let dir = conversations_dir()?;
     let path = dir.join("cwd_index.json");
-    let map: std::collections::HashMap<String, String> =
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+    let map: std::collections::HashMap<String, String> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
     if let Some(id) = map.get(cwd).cloned() {
         if conversation_path(&dir, &id).exists() {
             return Ok(id);

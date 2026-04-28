@@ -1,7 +1,7 @@
 //! Thin entry point for the `k` standalone AI chat CLI.
 
 use clap::Parser;
-use kaku_gui_lib::cli_chat::{CliArgs, run};
+use kaku_gui_lib::cli_chat::{run, CliArgs};
 
 #[derive(Parser)]
 #[command(
@@ -29,7 +29,9 @@ fn main() {
             Some(cli.prompt.join(" "))
         },
         new: cli.new,
-        resume: cli.resume.map(|id| if id.is_empty() { None } else { Some(id) }),
+        resume: cli
+            .resume
+            .map(|id| if id.is_empty() { None } else { Some(id) }),
     };
     if let Err(e) = run(args) {
         eprintln!("k: {}", e);

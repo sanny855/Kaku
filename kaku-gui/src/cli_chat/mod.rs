@@ -132,8 +132,7 @@ fn run_repl(engine: &mut Engine) -> anyhow::Result<()> {
 
     let history_path = {
         let p = config::user_config_path();
-        p.parent()
-            .map(|d| d.join("k_history.txt"))
+        p.parent().map(|d| d.join("k_history.txt"))
     };
 
     let mut rl = DefaultEditor::new()?;
@@ -178,7 +177,11 @@ fn run_repl(engine: &mut Engine) -> anyhow::Result<()> {
                     let _ = ai_conversations::write_cwd_index(&cwd, &engine.active_id);
                     eprintln!(
                         "[{}]",
-                        if cmd == "/new" { "new conversation started" } else { "conversation cleared" }
+                        if cmd == "/new" {
+                            "new conversation started"
+                        } else {
+                            "conversation cleared"
+                        }
                     );
                     continue;
                 }

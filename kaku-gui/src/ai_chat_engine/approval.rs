@@ -281,19 +281,14 @@ fn shell_tokens_are_dangerous(tokens: &[String]) -> bool {
     match cmd {
         "pwd" | "ls" | "cat" | "head" | "tail" | "wc" | "rg" | "grep" | "which" | "whereis"
         | "cut" | "uniq" | "nl" | "stat" | "file" | "realpath" | "readlink" | "basename"
-        | "dirname" | "echo" | "tr"
-        | "date" | "uname" | "hostname" | "whoami" | "id" | "groups"
-        | "uptime" | "w" | "who" | "last"
-        | "df" | "du" | "ps" | "lsof" | "free" | "vm_stat" | "printenv"
-        | "jq" | "base64" | "md5" | "md5sum"
-        | "shasum" | "sha1sum" | "sha256sum" | "cksum"
-        | "strings" | "od" | "hexdump"
-        | "diff" | "cmp" | "printf" | "seq" | "yes"
-        | "column" | "comm" | "join" | "paste"
-        | "expand" | "unexpand" | "fold" | "fmt" | "rev" | "tac"
-        | "dig" | "nslookup" | "host" | "ping"
-        | "cd" | "type" | "true" | "false" | "sleep" | "tty" | "locale"
-        | "nm" | "otool" | "addr2line" | "c++filt" | "objdump" => false,
+        | "dirname" | "echo" | "tr" | "date" | "uname" | "hostname" | "whoami" | "id"
+        | "groups" | "uptime" | "w" | "who" | "last" | "df" | "du" | "ps" | "lsof" | "free"
+        | "vm_stat" | "printenv" | "jq" | "base64" | "md5" | "md5sum" | "shasum" | "sha1sum"
+        | "sha256sum" | "cksum" | "strings" | "od" | "hexdump" | "diff" | "cmp" | "printf"
+        | "seq" | "yes" | "column" | "comm" | "join" | "paste" | "expand" | "unexpand" | "fold"
+        | "fmt" | "rev" | "tac" | "dig" | "nslookup" | "host" | "ping" | "cd" | "type" | "true"
+        | "false" | "sleep" | "tty" | "locale" | "nm" | "otool" | "addr2line" | "c++filt"
+        | "objdump" => false,
 
         "curl" => curl_is_dangerous(tokens),
         "sed" => tokens
@@ -635,7 +630,9 @@ mod tests {
 
     #[test]
     fn process_substitution_requires_approval() {
-        assert!(shell_command_requires_approval("diff <(ls dir1) <(ls dir2)"));
+        assert!(shell_command_requires_approval(
+            "diff <(ls dir1) <(ls dir2)"
+        ));
     }
 
     #[test]
