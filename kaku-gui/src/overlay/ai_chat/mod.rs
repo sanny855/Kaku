@@ -307,11 +307,10 @@ fn push_input_snapshot(stack: &mut Vec<InputSnapshot>, input: &str, cursor: usiz
 /// single-cell so frame width is stable. (Memory: `feedback_spinner_frames`
 /// warns against mixing wide glyphs into a narrow series.)
 const SPINNER_FRAMES: &[&str] = &["✦", "✶", "✺", "✵", "✸", "✹", "✺"];
-/// Input-row spinner uses solid half-circles that rotate visibly at a larger
-/// visual weight than the delicate star glyphs in the header. 4 frames give
-/// a crisp clockwise rotation; each glyph is single-cell so the prompt width
-/// stays stable across frames.
-const SPINNER_FRAMES_INPUT: &[&str] = &["◐", "◓", "◑", "◒"];
+/// Input-row spinner uses a bullseye/fisheye pulse that reads larger than the
+/// delicate star glyphs in the header. Two frames give a steady breathing beat;
+/// each glyph is single-cell so the prompt width stays stable across frames.
+const SPINNER_FRAMES_INPUT: &[&str] = &["◉", "◎"];
 /// 50ms per frame: noticeably more "alive" than 80ms. At 50ms a 4-frame loop
 /// completes in 200ms and a 7-frame loop in 350ms — clearly active.
 const SPINNER_INTERVAL_MS: u128 = 50;
