@@ -3,16 +3,16 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Paragraph};
 
-use crate::tui_core::theme::{bg, muted};
+use crate::tui_core::theme::muted;
 
 /// Render a centered splash frame. Call via `terminal.draw(|f| render_splash(f, "Loading..."))`.
 /// The next real UI draw naturally overwrites this frame.
 pub fn render_splash(frame: &mut ratatui::Frame, message: &str) {
     let area = frame.area();
     frame.render_widget(Clear, area);
-    frame.render_widget(Block::default().style(Style::default().bg(bg())), area);
+    frame.render_widget(Block::default(), area);
 
-    let text = format!("◐  {message}");
+    let text = format!("●  {message}");
     let chunks = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(1),

@@ -25,6 +25,7 @@ use unicode_segmentation::UnicodeSegmentation;
 mod agent;
 mod approval;
 mod markdown;
+mod syntax;
 mod waza;
 
 pub(crate) use agent::{generate_summary, maybe_extract_memories, run_agent};
@@ -131,8 +132,9 @@ pub struct TerminalContext {
     pub selected_text: String,
     pub colors: ChatPalette,
 
-    /// Exit code of the last command (from OSC 133 D), if available.
-    /// None means either no command has run yet, or shell integration is not active.
+    pub panel_cols: usize,
+    pub panel_rows: usize,
+
     pub last_exit_code: Option<i32>,
 
     /// Output lines from the last command (from OSC 133 C to D), if available.
@@ -303,17 +305,9 @@ fn push_input_snapshot(stack: &mut Vec<InputSnapshot>, input: &str, cursor: usiz
     });
 }
 
-/// Header / tool-call spinner: simple star twinkle. All glyphs are
-/// single-cell so frame width is stable. (Memory: `feedback_spinner_frames`
-/// warns against mixing wide glyphs into a narrow series.)
 const SPINNER_FRAMES: &[&str] = &["✦", "✶", "✺", "✵", "✸", "✹", "✺"];
-/// Input-row spinner uses a bullseye/fisheye pulse that reads larger than the
-/// delicate star glyphs in the header. Two frames give a steady breathing beat;
-/// each glyph is single-cell so the prompt width stays stable across frames.
-const SPINNER_FRAMES_INPUT: &[&str] = &["◉", "◎"];
-/// 50ms per frame: noticeably more "alive" than 80ms. At 50ms a 4-frame loop
-/// completes in 200ms and a 7-frame loop in 350ms — clearly active.
-const SPINNER_INTERVAL_MS: u128 = 50;
+const SPINNER_FRAMES_TOOL: &[&str] = &["●", "∙"];
+const SPINNER_INTERVAL_MS: u128 = 80;
 
 /// Cap on how many wrapped rows the input box can occupy before it starts to
 /// scroll internally. Keeps the message area from collapsing when a user
@@ -567,9 +561,10 @@ impl App {
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
     }
 
-    fn spinner_char_input(&self) -> &'static str {
-        SPINNER_FRAMES_INPUT[self.spinner_frame % SPINNER_FRAMES_INPUT.len()]
+    fn spinner_char_tool(&self) -> &'static str {
+        SPINNER_FRAMES_TOOL[self.spinner_frame % SPINNER_FRAMES_TOOL.len()]
     }
+
 
     /// Push the current (input, cursor) onto the undo stack before a
     /// destructive edit. Empty inputs are skipped to avoid polluting the
@@ -909,11 +904,9 @@ impl App {
         self.cols.saturating_sub(2)
     }
 
-    /// Prompt prefix shown in front of the input. Width is stable across
-    /// spinner frames (each glyph is single-cell, see SPINNER_FRAMES_INPUT).
     fn current_input_prompt(&self) -> String {
         if self.is_streaming {
-            format!("  {} ", self.spinner_char_input())
+            format!("  {} ", self.spinner_char())
         } else {
             "  > ".to_string()
         }
@@ -1282,19 +1275,28 @@ fn emit_user_lines(out: &mut Vec<DisplayLine>, content: &str, width: usize) {
 /// `DisplayLine::Text` entries (wrapping applied per block; list items carry
 /// their bullet/number on the first wrapped line only).
 fn emit_assistant_markdown(out: &mut Vec<DisplayLine>, content: &str, width: usize) {
-    for block in parse_markdown_blocks(content) {
-        match block {
-            MdBlock::Blank => out.push(DisplayLine::Blank),
-            MdBlock::Hr => out.push(DisplayLine::Text {
-                segments: vec![InlineSpan {
-                    text: "─".repeat(width),
-                    style: InlineStyle::Plain,
-                }],
-                role: Role::Assistant,
-                block: BlockStyle::Hr,
-            }),
+    let blocks = parse_markdown_blocks(content);
+    let len = blocks.len();
+    let mut i = 0;
+    while i < len {
+        match &blocks[i] {
+            MdBlock::Blank => {
+                out.push(DisplayLine::Blank);
+                i += 1;
+            }
+            MdBlock::Hr => {
+                out.push(DisplayLine::Text {
+                    segments: vec![InlineSpan {
+                        text: "─".repeat(width),
+                        style: InlineStyle::Plain,
+                    }],
+                    role: Role::Assistant,
+                    block: BlockStyle::Hr,
+                });
+                i += 1;
+            }
             MdBlock::Paragraph(text) => {
-                let segs = tokenize_inline(&text);
+                let segs = tokenize_inline(text);
                 for wrapped in wrap_segments(&segs, width) {
                     out.push(DisplayLine::Text {
                         segments: wrapped,
@@ -1302,20 +1304,22 @@ fn emit_assistant_markdown(out: &mut Vec<DisplayLine>, content: &str, width: usi
                         block: BlockStyle::Normal,
                     });
                 }
+                i += 1;
             }
             MdBlock::Heading { level, text } => {
-                let segs = tokenize_inline(&text);
+                let segs = tokenize_inline(text);
+                let lv = *level;
                 for wrapped in wrap_segments(&segs, width) {
                     out.push(DisplayLine::Text {
                         segments: wrapped,
                         role: Role::Assistant,
-                        block: BlockStyle::Heading(level),
+                        block: BlockStyle::Heading(lv),
                     });
                 }
+                i += 1;
             }
             MdBlock::Quote(text) => {
-                // Quote prefix "│ " takes 2 cols, so wrap to width - 2.
-                let segs = tokenize_inline(&text);
+                let segs = tokenize_inline(text);
                 let avail = width.saturating_sub(2).max(1);
                 for wrapped in wrap_segments(&segs, avail) {
                     out.push(DisplayLine::Text {
@@ -1324,16 +1328,15 @@ fn emit_assistant_markdown(out: &mut Vec<DisplayLine>, content: &str, width: usi
                         block: BlockStyle::Quote,
                     });
                 }
+                i += 1;
             }
             MdBlock::ListItem { marker, text } => {
-                // First wrapped line carries the marker; continuations indent.
-                let marker_w = unicode_column_width(&marker, None);
+                let marker_w = unicode_column_width(marker, None);
                 let avail = width.saturating_sub(marker_w).max(1);
-                let segs = tokenize_inline(&text);
+                let segs = tokenize_inline(text);
                 let wrapped_lines = wrap_segments(&segs, avail);
-                for (i, mut wrapped) in wrapped_lines.into_iter().enumerate() {
-                    if i == 0 {
-                        // Prepend marker as a Plain span so it shares the item's text color.
+                for (j, mut wrapped) in wrapped_lines.into_iter().enumerate() {
+                    if j == 0 {
                         wrapped.insert(
                             0,
                             InlineSpan {
@@ -1354,24 +1357,39 @@ fn emit_assistant_markdown(out: &mut Vec<DisplayLine>, content: &str, width: usi
                         });
                     }
                 }
+                i += 1;
             }
-            MdBlock::CodeLine { text, diff } => {
-                let block = match diff {
-                    DiffKind::Add => BlockStyle::DiffAdd,
-                    DiffKind::Remove => BlockStyle::DiffRemove,
-                    DiffKind::Hunk => BlockStyle::DiffHunk,
-                    DiffKind::None => BlockStyle::Code,
-                };
-                let seg = vec![InlineSpan {
-                    text,
-                    style: InlineStyle::Code,
-                }];
-                for wrapped in wrap_segments(&seg, width) {
-                    out.push(DisplayLine::Text {
-                        segments: wrapped,
-                        role: Role::Assistant,
-                        block,
-                    });
+            MdBlock::CodeLine { lang, .. } => {
+                let group_lang = lang.clone();
+                let start = i;
+                while i < len {
+                    match &blocks[i] {
+                        MdBlock::CodeLine { lang: l, .. } if *l == group_lang => i += 1,
+                        _ => break,
+                    }
+                }
+                let code_lines: Vec<_> = blocks[start..i]
+                    .iter()
+                    .map(|b| match b {
+                        MdBlock::CodeLine { text, diff, .. } => (text.as_str(), *diff),
+                        _ => unreachable!(),
+                    })
+                    .collect();
+                let highlighted = syntax::highlight_code_block(&code_lines, &group_lang);
+                for (spans, diff) in highlighted {
+                    let block = match diff {
+                        DiffKind::Add => BlockStyle::DiffAdd,
+                        DiffKind::Remove => BlockStyle::DiffRemove,
+                        DiffKind::Hunk => BlockStyle::DiffHunk,
+                        DiffKind::None => BlockStyle::Code,
+                    };
+                    for wrapped in wrap_segments(&spans, width) {
+                        out.push(DisplayLine::Text {
+                            segments: wrapped,
+                            role: Role::Assistant,
+                            block,
+                        });
+                    }
                 }
             }
         }
@@ -2314,6 +2332,7 @@ pub(crate) enum InlineStyle {
     Bold,
     Italic,
     Code,
+    Highlighted(u8, u8, u8),
 }
 
 #[derive(Clone, Debug)]
@@ -2392,7 +2411,7 @@ pub(crate) enum MdBlock {
     Heading { level: u8, text: String },
     Quote(String),
     ListItem { marker: String, text: String },
-    CodeLine { text: String, diff: DiffKind },
+    CodeLine { text: String, diff: DiffKind, lang: String },
     Hr,
 }
 
@@ -2440,6 +2459,17 @@ fn inline_cell(style: InlineStyle, block: BlockStyle, pal: &ChatPalette) -> Cell
             a
         }
         InlineStyle::Code => pal.input_cell(),
+        InlineStyle::Highlighted(r, g, b) => {
+            let mut a = base;
+            let fg = ColorAttribute::TrueColorWithDefaultFallback(SrgbaTuple(
+                r as f32 / 255.0,
+                g as f32 / 255.0,
+                b as f32 / 255.0,
+                1.0,
+            ));
+            a.apply_change(&AttributeChange::Foreground(fg));
+            a
+        }
     }
 }
 
@@ -2451,6 +2481,7 @@ fn build_line_runs(
     line: &DisplayLine,
     pal: &ChatPalette,
     spinner_char: &str,
+    spinner_char_tool: &str,
     content_width: usize,
 ) -> Vec<(CellAttributes, String)> {
     let mut runs: Vec<(CellAttributes, String)> = Vec::new();
@@ -2467,14 +2498,12 @@ fn build_line_runs(
             runs.push((pal.ai_header_cell(), "  AI".to_string()));
             if !tools.is_empty() {
                 // Render tool status in a dimmer tone so the "AI" header still pops.
-                let suffix = format_tool_suffix(tools, spinner_char);
+                let suffix = format_tool_suffix(tools, spinner_char_tool);
                 let avail = content_width.saturating_sub(4); // 4 = "  AI"
                 let suffix = if unicode_column_width(&suffix, None) > avail {
-                    // Overflow: try showing only the last tool before falling back.
-                    // Safe: guarded by `!tools.is_empty()` above.
                     let last_suffix = format_tool_suffix(
                         std::slice::from_ref(tools.last().unwrap()),
-                        spinner_char,
+                        spinner_char_tool,
                     );
                     if unicode_column_width(&last_suffix, None) <= avail {
                         last_suffix
@@ -2619,7 +2648,16 @@ fn emit_styled_line(
                     changes.push(Change::Text(p.text[..b1].to_string()));
                 }
                 if b2 > b1 {
-                    changes.push(Change::AllAttributes(pal.selection_cell()));
+                    let mut sel_attr = p.attr.clone();
+                    if pal.selection_fg.3 != 0.0 {
+                        sel_attr.set_foreground(
+                            ColorAttribute::TrueColorWithDefaultFallback(pal.selection_fg),
+                        );
+                    }
+                    sel_attr.set_background(
+                        ColorAttribute::TrueColorWithDefaultFallback(pal.selection_bg),
+                    );
+                    changes.push(Change::AllAttributes(sel_attr));
                     changes.push(Change::Text(p.text[b1..b2].to_string()));
                 }
                 if b2 < p.text.len() {
@@ -2711,7 +2749,7 @@ fn render_chat(term: &mut TermWizTerminal, app: &App) -> termwiz::Result<()> {
         flash_msg.clone()
     } else {
         let suffix = match &app.model_fetch {
-            ModelFetch::Loading => " · loading…".to_string(),
+            ModelFetch::Loading => format!(" · {} loading…", app.spinner_char()),
             ModelFetch::Failed(_) => " · (list failed)".to_string(),
             ModelFetch::Loaded if app.available_models.len() > 1 => {
                 format!(" ({}/{})", app.model_index + 1, app.available_models.len())
@@ -2767,7 +2805,7 @@ fn render_chat(term: &mut TermWizTerminal, app: &App) -> termwiz::Result<()> {
         changes.push(Change::AllAttributes(pal.border_dim_cell()));
         changes.push(Change::Text("│".to_string()));
 
-        let runs = build_line_runs(line, pal, app.spinner_char(), inner_w);
+        let runs = build_line_runs(line, pal, app.spinner_char(), app.spinner_char_tool(), inner_w);
         let line_idx = visible_start + i;
 
         // Determine the selection column range for this line (content columns, 0-based).
@@ -3126,13 +3164,14 @@ fn handle_key(key: &KeyEvent, app: &mut App) -> Action {
         .is_some_and(|(_, _, token)| picker_options.iter().any(|option| option.label == token));
 
     match (&key.key, key.modifiers) {
-        // Escape / Ctrl+C: cancel any running stream and exit the overlay.
+        // Escape / Ctrl+C: if streaming, first press cancels; second press exits.
         (KeyCode::Escape, _) | (KeyCode::Char('C'), Modifiers::CTRL) => {
             if app.is_streaming || !app.grapheme_queue.is_empty() {
-                app.cancel_flag.store(true, Ordering::Relaxed);
-                app.grapheme_queue.clear();
+                app.cancel_stream();
+                Action::Continue
+            } else {
+                Action::Quit
             }
-            Action::Quit
         }
 
         // Submit: built-in control commands execute immediately. Waza commands
@@ -3966,6 +4005,8 @@ mod markdown_tests {
             tab_snapshot: "cargo test\nerror: boom".to_string(),
             selected_text: "selected snippet".to_string(),
             colors: test_palette(),
+            panel_cols: 80,
+            panel_rows: 24,
             last_exit_code: None,
             last_command_output: None,
         }
@@ -4286,6 +4327,8 @@ mod markdown_tests {
             tab_snapshot: String::new(),
             selected_text: String::new(),
             colors: test_palette(),
+            panel_cols: 80,
+            panel_rows: 24,
             last_exit_code: None,
             last_command_output: None,
         };
@@ -4668,6 +4711,8 @@ mod markdown_tests {
             tab_snapshot: String::new(),
             selected_text: String::new(),
             colors: test_palette(),
+            panel_cols: 80,
+            panel_rows: 24,
             last_exit_code: None,
             last_command_output: None,
         })

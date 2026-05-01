@@ -44,6 +44,10 @@ pub(crate) fn build_environment_message(ctx: &TerminalContext) -> ApiMessage {
     if let Some(ver) = macos_version() {
         s.push_str(&format!("macOS: {}\n", ver));
     }
+    s.push_str(&format!(
+        "Terminal size: {} cols x {} rows\n",
+        ctx.panel_cols, ctx.panel_rows
+    ));
     if !ctx.cwd.is_empty() {
         s.push_str(&format!("Current directory: {}\n", ctx.cwd));
     }
@@ -169,6 +173,8 @@ mod tests {
             tab_snapshot: String::new(),
             selected_text: String::new(),
             colors: palette,
+            panel_cols: 80,
+            panel_rows: 24,
             last_exit_code: exit_code,
             last_command_output: output.map(|v| v.iter().map(|s| s.to_string()).collect()),
         }

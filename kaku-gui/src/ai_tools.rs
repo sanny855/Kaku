@@ -595,6 +595,10 @@ const DEFAULT_RESULT_BYTES: usize = 8_000;
 /// from blocking the whole agent loop indefinitely.
 const SHELL_EXEC_TIMEOUT_SECS: u64 = 60;
 
+/// Wall-clock ceiling for grep_search / symbol_search. These tools spawn rg or
+/// grep, which can stall on very large trees or network-mounted filesystems.
+const SEARCH_TIMEOUT_SECS: u64 = 30;
+
 /// Per-tool byte budgets for tool-call results.
 ///
 /// `detail` maps to the budget tier:
@@ -1105,7 +1109,7 @@ pub fn execute(
             let search_path = args["path"].as_str().unwrap_or(cwd);
             let kind = args["kind"].as_str().unwrap_or("all");
             let glob_filter = args["glob"].as_str();
-            exec_symbol_search(query, kind, search_path, glob_filter, cwd)?
+            exec_symbol_search(query, kind, search_path, glob_filter, cwd, cancel)?
         }
         "grep_search" => {
             let pattern = args["pattern"].as_str().context("missing pattern")?;
@@ -1122,6 +1126,7 @@ pub fn execute(
                 case_insensitive,
                 max_results,
                 cwd,
+                cancel,
             )?
         }
         "memory_read" => {
@@ -1788,6 +1793,7 @@ fn exec_symbol_search(
     search_path: &str,
     glob_filter: Option<&str>,
     cwd: &str,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<String> {
     let abs_path = resolve(search_path, cwd)?.to_string_lossy().into_owned();
 
@@ -1858,17 +1864,69 @@ fn exec_symbol_search(
     };
 
     cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    let output = cmd.output().context("symbol_search exec failed")?;
-    let text = String::from_utf8_lossy(&output.stdout);
+        .stderr(std::process::Stdio::null())
+        .process_group(0);
+    let mut child = cmd.spawn().context("symbol_search exec failed")?;
+
+    let stdout_pipe = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("symbol_search stdout missing"))?;
+    let collected = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let collected_clone = collected.clone();
+    let reader_thread = std::thread::spawn(move || {
+        let mut r = stdout_pipe;
+        let mut buf = [0u8; 8192];
+        loop {
+            match r.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if let Ok(mut g) = collected_clone.lock() {
+                        g.extend_from_slice(&buf[..n]);
+                    }
+                }
+            }
+        }
+    });
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(SEARCH_TIMEOUT_SECS);
+    let mut timed_out = false;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            kill_process_group(&child);
+            child.wait().ok();
+            let _ = reader_thread.join();
+            anyhow::bail!("symbol_search canceled");
+        }
+        if start.elapsed() >= timeout {
+            kill_process_group(&child);
+            timed_out = true;
+            break;
+        }
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    child.wait().ok();
+    let _ = reader_thread.join();
+
+    let raw = collected.lock().map(|g| g.clone()).unwrap_or_default();
+    let text = String::from_utf8_lossy(&raw);
 
     if text.trim().is_empty() {
+        if timed_out {
+            return Ok(format!(
+                "symbol_search timed out after {}s with no results for '{}'.",
+                SEARCH_TIMEOUT_SECS, query
+            ));
+        }
         return Ok(format!("No symbol definitions found for '{}'.", query));
     }
 
     // Deduplicate and limit results.
     let mut lines: Vec<&str> = text.lines().take(100).collect();
-    // Prefer lines that look like actual definitions (contain the query near a keyword).
     lines.sort_by(|a, b| {
         let a_has_kw = a.contains("fn ")
             || a.contains("function ")
@@ -1891,7 +1949,14 @@ fn exec_symbol_search(
         b_has_kw.cmp(&a_has_kw)
     });
 
-    Ok(lines.join("\n"))
+    let mut out = lines.join("\n");
+    if timed_out {
+        out.push_str(&format!(
+            "\n[... timed out after {}s, results may be partial]",
+            SEARCH_TIMEOUT_SECS
+        ));
+    }
+    Ok(out)
 }
 
 fn exec_grep_search(
@@ -1902,6 +1967,7 @@ fn exec_grep_search(
     case_insensitive: bool,
     max_results: usize,
     cwd: &str,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<String> {
     // Use ripgrep if available, fall back to grep. Cached after first probe.
     static HAS_RG: OnceLock<bool> = OnceLock::new();
@@ -1948,7 +2014,8 @@ fn exec_grep_search(
 
     // Stream stdout line by line to avoid buffering the full output in memory.
     cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stderr(std::process::Stdio::piped())
+        .process_group(0);
     let mut child = cmd.spawn().context("grep_search exec failed")?;
     let stdout = child
         .stdout
@@ -1983,37 +2050,71 @@ fn exec_grep_search(
         }
     });
 
-    let reader = std::io::BufReader::new(stdout);
+    let result_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let match_count: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let truncated_flag = Arc::new(AtomicBool::new(false));
 
-    let mut result_lines: Vec<String> = Vec::new();
-    let mut match_count = 0usize;
-    let mut truncated = false;
-
-    for line_result in reader.lines() {
-        let line = match line_result {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-        // Lines with ":" are matches; "--" are context separators.
-        if !line.starts_with("--") {
-            if match_count >= max_results {
-                truncated = true;
-                break;
+    let rl = result_lines.clone();
+    let mc = match_count.clone();
+    let tf = truncated_flag.clone();
+    let max = max_results;
+    let reader_handle = std::thread::spawn(move || {
+        let reader = std::io::BufReader::new(stdout);
+        for line_result in reader.lines() {
+            let line = match line_result {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            if !line.starts_with("--") {
+                if mc.load(Ordering::Relaxed) >= max {
+                    tf.store(true, Ordering::Relaxed);
+                    break;
+                }
+                mc.fetch_add(1, Ordering::Relaxed);
             }
-            match_count += 1;
+            if let Ok(mut g) = rl.lock() {
+                g.push(line);
+            }
         }
-        result_lines.push(line);
-    }
+    });
 
-    // Only kill on truncation; otherwise let the child finish naturally.
-    if truncated {
-        let _ = child.kill();
+    let start = Instant::now();
+    let timeout = Duration::from_secs(SEARCH_TIMEOUT_SECS);
+    let mut timed_out = false;
+    let mut canceled = false;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            kill_process_group(&child);
+            canceled = true;
+            break;
+        }
+        if start.elapsed() >= timeout {
+            kill_process_group(&child);
+            timed_out = true;
+            break;
+        }
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
     child.wait().ok();
+    let _ = reader_handle.join();
     let _ = stderr_handle.join();
 
-    if result_lines.is_empty() {
-        // Surface any stderr hint (e.g. invalid regex, missing path).
+    let truncated = truncated_flag.load(Ordering::Relaxed);
+    let lines = result_lines.lock().map(|g| g.clone()).unwrap_or_default();
+
+    if lines.is_empty() {
+        if canceled {
+            anyhow::bail!("grep_search canceled");
+        }
+        if timed_out {
+            return Ok(format!(
+                "grep_search timed out after {}s with no results.",
+                SEARCH_TIMEOUT_SECS
+            ));
+        }
         let hint = stderr_buf
             .lock()
             .ok()
@@ -2031,10 +2132,20 @@ fn exec_grep_search(
         return Ok("No matches found.".into());
     }
 
+    let mut out = lines.join("\n");
     if truncated {
-        result_lines.push(format!("\n[... truncated at {} results]", max_results));
+        out.push_str(&format!("\n[... truncated at {} results]", max_results));
     }
-    Ok(result_lines.join("\n"))
+    if timed_out {
+        out.push_str(&format!(
+            "\n[... timed out after {}s, results may be partial]",
+            SEARCH_TIMEOUT_SECS
+        ));
+    }
+    if canceled {
+        out.push_str("\n[... canceled by user]");
+    }
+    Ok(out)
 }
 
 fn exec_http_request(
@@ -2481,6 +2592,376 @@ mod tests {
             result.contains("hello world"),
             "expected match in result: {}",
             result
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Eval test suite: end-to-end tool-chain scenarios on a fixture
+    // ---------------------------------------------------------------
+
+    fn create_project_fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"[package]
+name = "demo-app"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(root.join("README.md"), "# Demo App\nA small CLI tool for greeting users.\n").unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(
+            root.join("Makefile"),
+            "test:\n\tcargo test\nbuild:\n\tcargo build\n",
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(root.join("src")).unwrap();
+
+        std::fs::write(
+            root.join("src/main.rs"),
+            r#"fn main() {
+    let nmae = "World";
+    println!("Hello, {}!", nmae);
+}
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            root.join("src/lib.rs"),
+            r#"pub fn greet(name: &str) -> String {
+    format!("Hello, {}!", name)
+}
+
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            root.join("src/utils.rs"),
+            r#"// TODO: add input validation
+pub fn sanitize_input(input: &str) -> String {
+    input.trim().to_string()
+}
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            root.join("src/config.rs"),
+            r#"pub struct AppConfig {
+    pub verbose: bool,
+    pub name: String,
+}
+"#,
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(
+            root.join("tests/integration.rs"),
+            r#"#[test]
+fn test_greet() {
+    assert_eq!(demo_app::greet("Rust"), "Hello, Rust!");
+}
+"#,
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("docs/API.md"), "# API\n\n## greet(name)\nReturns a greeting string.\n").unwrap();
+
+        dir
+    }
+
+    #[test]
+    fn eval_01_project_summary_and_readme() {
+        let fixture = create_project_fixture();
+        let mut cwd = fixture.path().to_string_lossy().into_owned();
+        let cfg = dummy_config();
+        let cancel = no_cancel();
+
+        let summary = execute(
+            "project_summary",
+            &serde_json::json!({}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(summary.contains("Rust"), "summary should detect Rust: {}", summary);
+        assert!(summary.contains("cargo"), "summary should mention cargo: {}", summary);
+
+        let readme = execute(
+            "fs_read",
+            &serde_json::json!({"path": "README.md"}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(readme.contains("Demo App"), "README should contain project name: {}", readme);
+    }
+
+    #[test]
+    fn eval_02_file_tree() {
+        let fixture = create_project_fixture();
+        let mut cwd = fixture.path().to_string_lossy().into_owned();
+        let cfg = dummy_config();
+        let cancel = no_cancel();
+
+        let tree = execute(
+            "file_tree",
+            &serde_json::json!({"depth": 2}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(tree.contains("src/"), "tree should list src/: {}", tree);
+        assert!(tree.contains("main.rs"), "tree should list main.rs: {}", tree);
+        assert!(tree.contains("lib.rs"), "tree should list lib.rs: {}", tree);
+        assert!(tree.contains("Cargo.toml"), "tree should list Cargo.toml: {}", tree);
+        assert!(!tree.contains(".git/"), "tree should not list .git/: {}", tree);
+        assert!(!tree.contains("target/"), "tree should not list target/: {}", tree);
+    }
+
+    #[test]
+    fn eval_03_symbol_search_greet() {
+        let fixture = create_project_fixture();
+        let mut cwd = fixture.path().to_string_lossy().into_owned();
+        let cfg = dummy_config();
+        let cancel = no_cancel();
+
+        let result = execute(
+            "symbol_search",
+            &serde_json::json!({"query": "greet", "kind": "function", "glob": "*.rs"}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(result.contains("fn greet"), "should find fn greet: {}", result);
+        assert!(result.contains("lib.rs"), "should locate in lib.rs: {}", result);
+    }
+
+    #[test]
+    fn eval_04_grep_search_todo() {
+        let fixture = create_project_fixture();
+        let mut cwd = fixture.path().to_string_lossy().into_owned();
+        let cfg = dummy_config();
+        let cancel = no_cancel();
+
+        let result = execute(
+            "grep_search",
+            &serde_json::json!({"pattern": "TODO", "glob": "*.rs"}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(result.contains("utils.rs"), "should find TODO in utils.rs: {}", result);
+        assert!(result.contains("TODO"), "should contain the TODO text: {}", result);
+    }
+
+    #[test]
+    fn eval_05_fs_read_line_range() {
+        let fixture = create_project_fixture();
+        let mut cwd = fixture.path().to_string_lossy().into_owned();
+        let cfg = dummy_config();
+        let cancel = no_cancel();
+
+        let result = execute(
+            "fs_read",
+            &serde_json::json!({"path": "src/main.rs", "start_line": 1, "end_line": 5}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        let lines: Vec<&str> = result.lines().collect();
+        assert!(lines.len() <= 5, "should return at most 5 lines, got {}", lines.len());
+        assert!(result.contains("fn main"), "should contain fn main: {}", result);
+    }
+
+    #[test]
+    fn eval_06_read_then_patch() {
+        let fixture = create_project_fixture();
+        let mut cwd = fixture.path().to_string_lossy().into_owned();
+        let cfg = dummy_config();
+        let cancel = no_cancel();
+
+        let before = execute(
+            "fs_read",
+            &serde_json::json!({"path": "src/main.rs"}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(before.contains("nmae"), "should contain typo before patch: {}", before);
+
+        let patch_result = execute(
+            "fs_patch",
+            &serde_json::json!({
+                "path": "src/main.rs",
+                "old_text": "let nmae = \"World\";\n    println!(\"Hello, {}!\", nmae);",
+                "new_text": "let name = \"World\";\n    println!(\"Hello, {}!\", name);"
+            }),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(
+            patch_result.contains("replaced 1 occurrence"),
+            "patch should report replacement: {}",
+            patch_result
+        );
+
+        let after = execute(
+            "fs_read",
+            &serde_json::json!({"path": "src/main.rs"}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(!after.contains("nmae"), "typo should be gone after patch: {}", after);
+        assert!(after.contains("let name"), "corrected text should be present: {}", after);
+    }
+
+    #[test]
+    fn eval_07_fs_write_and_verify() {
+        let fixture = create_project_fixture();
+        let mut cwd = fixture.path().to_string_lossy().into_owned();
+        let cfg = dummy_config();
+        let cancel = no_cancel();
+
+        let content = "pub fn helper() -> &'static str {\n    \"help\"\n}\n";
+        let write_result = execute(
+            "fs_write",
+            &serde_json::json!({"path": "src/helpers.rs", "content": content}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(write_result.contains("Written"), "should confirm write: {}", write_result);
+        assert!(
+            write_result.contains(&format!("{}", content.len())),
+            "should report byte count: {}",
+            write_result
+        );
+
+        let read_back = execute(
+            "fs_read",
+            &serde_json::json!({"path": "src/helpers.rs"}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(read_back.contains("pub fn helper"), "should read back written content: {}", read_back);
+    }
+
+    #[test]
+    fn eval_08_shell_exec() {
+        let fixture = create_project_fixture();
+        let mut cwd = fixture.path().to_string_lossy().into_owned();
+        let cfg = dummy_config();
+        let cancel = no_cancel();
+
+        let result = execute(
+            "shell_exec",
+            &serde_json::json!({"command": "echo 'all 3 tests passed'"}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(
+            result.contains("all 3 tests passed"),
+            "should contain echo output: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn eval_09_list_then_delete() {
+        let fixture = create_project_fixture();
+        let mut cwd = fixture.path().to_string_lossy().into_owned();
+        let cfg = dummy_config();
+        let cancel = no_cancel();
+
+        let before = execute(
+            "fs_list",
+            &serde_json::json!({"path": "docs"}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(before.contains("API.md"), "docs should contain API.md before delete: {}", before);
+
+        let del = execute(
+            "fs_delete",
+            &serde_json::json!({"path": "docs/API.md"}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(del.contains("Deleted"), "should confirm deletion: {}", del);
+
+        let after = execute(
+            "fs_list",
+            &serde_json::json!({"path": "docs"}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(!after.contains("API.md"), "API.md should be gone after delete: {}", after);
+    }
+
+    #[test]
+    fn eval_10_error_paths() {
+        let fixture = create_project_fixture();
+        let mut cwd = fixture.path().to_string_lossy().into_owned();
+        let cfg = dummy_config();
+        let cancel = no_cancel();
+
+        let read_err = execute(
+            "fs_read",
+            &serde_json::json!({"path": "src/nonexistent.rs"}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        );
+        assert!(read_err.is_err(), "fs_read of nonexistent file should return Err");
+
+        let grep_result = execute(
+            "grep_search",
+            &serde_json::json!({"pattern": "ZZZZNOTEXIST"}),
+            &mut cwd,
+            &cfg,
+            &cancel,
+        )
+        .unwrap();
+        assert!(
+            grep_result.contains("No matches"),
+            "grep for nonexistent pattern should report no matches: {}",
+            grep_result
         );
     }
 }

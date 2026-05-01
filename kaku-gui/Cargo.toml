@@ -94,6 +94,7 @@ toml.workspace = true
 shlex.workspace = true
 smol.workspace = true
 tabout.workspace = true
+syntect.workspace = true
 termwiz-funcs.workspace = true
 termwiz.workspace = true
 textwrap.workspace = true

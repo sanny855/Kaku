@@ -15,9 +15,20 @@ fn classify_diff_line(line: &str) -> DiffKind {
 }
 
 pub(crate) fn parse_markdown_blocks(content: &str) -> Vec<MdBlock> {
+    let lines: Vec<&str> = content.split('\n').collect();
     let mut out = Vec::new();
     let mut fence_lang: Option<String> = None;
-    for line in content.split('\n') {
+    let mut i = 0;
+    while i < lines.len() {
+        if fence_lang.is_none() {
+            if let Some((table_blocks, consumed)) = try_parse_pipe_table(&lines, i) {
+                out.extend(table_blocks);
+                i += consumed;
+                continue;
+            }
+        }
+        let line = lines[i];
+        i += 1;
         let trimmed_start = line.trim_start();
         // Fence open/close: ``` or ~~~ on their own (possibly with info string).
         if trimmed_start.starts_with("```") || trimmed_start.starts_with("~~~") {
@@ -42,6 +53,7 @@ pub(crate) fn parse_markdown_blocks(content: &str) -> Vec<MdBlock> {
             out.push(MdBlock::CodeLine {
                 text: line.to_string(),
                 diff,
+                lang: lang.clone(),
             });
             continue;
         }
@@ -99,6 +111,87 @@ pub(crate) fn parse_markdown_blocks(content: &str) -> Vec<MdBlock> {
         out.push(MdBlock::Paragraph(trimmed_start.to_string()));
     }
     out
+}
+
+fn is_separator_row(s: &str) -> bool {
+    let trimmed = s.trim();
+    let trimmed = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let trimmed = trimmed.strip_suffix('|').unwrap_or(trimmed);
+    if trimmed.is_empty() {
+        return false;
+    }
+    trimmed
+        .split('|')
+        .all(|cell| {
+            let c = cell.trim();
+            !c.is_empty()
+                && c.chars()
+                    .all(|ch| ch == '-' || ch == ':' || ch == ' ')
+                && c.contains('-')
+        })
+}
+
+fn count_pipes(s: &str) -> usize {
+    s.chars().filter(|&c| c == '|').count()
+}
+
+fn split_table_cells(s: &str) -> Vec<String> {
+    let trimmed = s.trim();
+    let trimmed = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let trimmed = trimmed.strip_suffix('|').unwrap_or(trimmed);
+    trimmed.split('|').map(|c| c.trim().to_string()).collect()
+}
+
+fn try_parse_pipe_table(lines: &[&str], start: usize) -> Option<(Vec<MdBlock>, usize)> {
+    if start + 2 > lines.len() {
+        return None;
+    }
+    let header_line = lines[start].trim();
+    if count_pipes(header_line) < 2 {
+        return None;
+    }
+    let sep_line = lines[start + 1].trim();
+    if !is_separator_row(sep_line) {
+        return None;
+    }
+    let headers = split_table_cells(header_line);
+    let sep_cells = split_table_cells(sep_line);
+    if headers.len() != sep_cells.len() || headers.len() < 2 {
+        return None;
+    }
+    let col_count = headers.len();
+    let mut data_rows: Vec<Vec<String>> = Vec::new();
+    let mut end = start + 2;
+    while end < lines.len() {
+        let row = lines[end].trim();
+        if row.is_empty() || count_pipes(row) < 2 {
+            break;
+        }
+        let cells = split_table_cells(row);
+        if cells.len() != col_count {
+            break;
+        }
+        data_rows.push(cells);
+        end += 1;
+    }
+    if data_rows.is_empty() {
+        return None;
+    }
+    let mut blocks = Vec::new();
+    for row in &data_rows {
+        let label = &row[0];
+        blocks.push(MdBlock::Paragraph(label.to_string()));
+        for (ci, cell) in row.iter().enumerate().skip(1) {
+            if !cell.is_empty() {
+                blocks.push(MdBlock::Paragraph(format!(
+                    "  {}：{}",
+                    headers[ci], cell
+                )));
+            }
+        }
+        blocks.push(MdBlock::Blank);
+    }
+    Some((blocks, end - start))
 }
 
 fn parse_heading_prefix(s: &str) -> Option<(u8, &str)> {

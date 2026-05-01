@@ -781,6 +781,7 @@ local ai_fix_api_base_url = "https://api.vivgrid.com/v1"
 local ai_fix_api_key = nil
 local ai_fix_model = "DeepSeek-V3.2"
 local ai_fix_custom_headers = {}
+local ai_fix_proxy = nil
 local ai_fix_timeout_secs = 30
 local ai_fix_debug_enabled = false
 local ai_fix_state_by_pane = {}
@@ -807,14 +808,18 @@ local function refresh_ai_fix_settings()
   ai_fix_enabled = read_ai_setting("enabled", ai_fix_enabled and "1" or "0") ~= "0"
   ai_fix_api_base_url = read_ai_setting("base_url", ai_fix_api_base_url)
   ai_fix_api_key = read_ai_setting("api_key", ai_fix_api_key)
-  ai_fix_model = read_ai_setting("model", ai_fix_model)
+  local base_model = read_ai_setting("model", ai_fix_model)
+  ai_fix_model = read_ai_setting("fast_model", base_model)
   ai_fix_custom_headers = read_ai_custom_headers("custom_headers")
+  local proxy_val = read_ai_setting("proxy", "")
+  ai_fix_proxy = (proxy_val ~= "") and proxy_val or nil
   local timeout_str = read_ai_setting("timeout_secs", tostring(ai_fix_timeout_secs))
   local timeout_num = tonumber(timeout_str)
   if timeout_num and timeout_num > 0 then
     ai_fix_timeout_secs = timeout_num
     ai_fix_poll_deadline_secs = ai_fix_timeout_secs + 4
   end
+  ai_fix_debug_enabled = read_ai_setting("debug", "0") ~= "0"
 end
 
 local function detect_git_branch(path)
@@ -1021,6 +1026,10 @@ printf '%s' "$status" > "$status_path"
     }
     for _, arg in ipairs(curl_header_args) do
       launch_args[#launch_args + 1] = arg
+    end
+    if ai_fix_proxy then
+      launch_args[#launch_args + 1] = "--proxy"
+      launch_args[#launch_args + 1] = ai_fix_proxy
     end
     wezterm.background_child_process(launch_args)
   end)
@@ -1524,9 +1533,9 @@ local function ctrl_ai_generate_spinner(pane, pane_state, clear)
   end
   if clear then
     if pane_state.spinner_line_active then
-      -- Cursor sits on the parking row. Move up to the spinner row and clear
-      -- it so zsh's prompt redraw (after \x15) can reuse this line.
-      pcall(function() pane:inject_output("\27[1A\r\27[K\27[?25h") end)
+      pcall(function()
+        pane:inject_output("\27[2D\27[K\27[?25h")
+      end)
       pane_state.spinner_line_active = false
     end
     return
@@ -1534,26 +1543,21 @@ local function ctrl_ai_generate_spinner(pane, pane_state, clear)
   if not pane then
     return
   end
-  local frames = { "◌", "◎", "◉", "●", "◉", "◎" }
+  local frames = { "✦", "✶", "✺", "✵", "✸", "✹", "✺" }
   local n = #frames
-  local hint = "Generating command..."
   local color_on = "\27[38;5;244m"
   local color_off = "\27[0m"
   if not pane_state.spinner_line_active then
     local frame = frames[(pane_state.spinner_frame % n) + 1]
     pcall(function()
-      pane:inject_output(
-        "\27[?25l\r\n " .. color_on .. frame .. color_off .. " " .. hint .. "\27[K\r\n"
-      )
+      pane:inject_output("\27[?25l " .. color_on .. frame .. color_off)
     end)
     pane_state.spinner_line_active = true
   else
     pane_state.spinner_frame = (pane_state.spinner_frame + 1) % n
     local frame = frames[pane_state.spinner_frame + 1]
     pcall(function()
-      pane:inject_output(
-        "\27[1A\r\27[K " .. color_on .. frame .. color_off .. " " .. hint .. "\27[K\r\n"
-      )
+      pane:inject_output("\27[2D " .. color_on .. frame .. color_off)
     end)
   end
 end
@@ -1571,6 +1575,7 @@ local ai_generate_state_by_pane = {}
 local function poll_ai_generate_job(window, pane, pane_id, job)
   local pane_state = ai_generate_state_by_pane[pane_id]
   if not pane_state or pane_state.pending_job_id ~= job.id then
+    ai_debug_log("poll_ai_generate mismatch pane_id=" .. pane_id .. " expected=" .. job.id .. " got=" .. tostring(pane_state and pane_state.pending_job_id))
     cleanup_ai_fix_job_files(job)
     return
   end
@@ -1682,7 +1687,7 @@ local function request_ai_generate_async(window, pane, pane_id, query, cwd, git_
   if pane_state then
     pane_state.pending_job_id = job.id
   end
-  ai_debug_log("ai_generate_job started pane_id=" .. pane_id .. " job_id=" .. job.id)
+  ai_debug_log("ai_generate_job started pane_id=" .. pane_id .. " job_id=" .. job.id .. " model=" .. ai_fix_model .. " proxy=" .. tostring(ai_fix_proxy))
 
   wezterm.time.call_after(ai_fix_poll_interval_secs, function()
     poll_ai_generate_job(window, pane, pane_id, job)
@@ -3326,6 +3331,9 @@ wezterm.on('user-var-changed', function(window, pane, name, value)
 
   pane_state.inflight = true
   pane_state.pending_job_id = nil
+  pcall(function()
+    window:perform_action(wezterm.action.EmitEvent("kaku-toast-ai-analyzing"), pane)
+  end)
 
   local cwd = pane_cwd(pane)
   local git_branch = detect_git_branch(cwd)
@@ -3423,6 +3431,8 @@ wezterm.on('user-var-changed', function(window, pane, name, value)
     pane_state.pending_job_id = nil
     ai_debug_log("ai_generate request start failed err=" .. tostring(err))
     inject_ai_status_and_finalize(pane, "Could not generate command right now.")
+  else
+    ctrl_ai_generate_spinner(pane, pane_state, false)
   end
 end)
 

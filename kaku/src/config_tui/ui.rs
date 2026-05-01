@@ -105,7 +105,7 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
     let area = Rect::new(full.x, full.y, full.width - 1, full.height);
 
     frame.render_widget(Clear, area);
-    frame.render_widget(Block::default().style(Style::default().bg(bg())), area);
+    frame.render_widget(Block::default(), area);
 
     let content_rows = rendered_field_row_count(app);
     match resolve_main_layout(area.height, content_rows) {

@@ -2857,7 +2857,6 @@ impl TermWindow {
             "config was reloaded, overrides: {:?}",
             self.config_overrides
         );
-        self.show_toast_for("Applying config...".to_string(), 1200);
         self.key_table_state.clear_stack();
         self.connection_name = Connection::get().map_or_else(
             || {
@@ -4401,6 +4400,8 @@ impl TermWindow {
                         tab_snapshot,
                         selected_text,
                         colors: chat_colors,
+                        panel_cols: dims.cols,
+                        panel_rows: dims.viewport_rows,
                         last_exit_code,
                         last_command_output,
                     };
