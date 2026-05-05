@@ -1,102 +1,41 @@
+//! Builds per-request prompt context for the Cmd+L AI overlay.
+//!
+//! This module assembles the additional user messages that accompany the
+//! static system prompt: environment metadata (date, locale, cwd, terminal
+//! size, persistent memory) and a sandboxed snapshot of the visible terminal
+//! output. The static system prompt itself lives in
+//! [`crate::ai_chat_engine::build_system_prompt`] so the overlay and the `k`
+//! CLI share one implementation.
+//!
+//! The tool-approval pipeline is *not* here; see
+//! [`crate::ai_chat_engine::approval`].
+
+use crate::ai_chat_engine::EnvironmentInputs;
 use crate::ai_client::ApiMessage;
 use crate::overlay::ai_chat::TerminalContext;
-use std::sync::OnceLock;
 
-/// Returns the static system prompt (prompt.txt verbatim).
-///
-/// Dynamic fields (date, cwd, locale) are intentionally excluded so the prompt
-/// bytes remain stable across requests and qualify for Anthropic's prompt-cache
-/// discount. Dynamic context is injected as a separate user message via
-/// `build_environment_message`.
-pub(crate) fn build_system_prompt() -> String {
-    let base = include_str!("prompt.txt");
-    let identity = crate::soul::load_for_prompt();
-    if identity.is_empty() {
-        base.to_string()
-    } else {
-        format!(
-            "{}\n\n---\n\nUSER IDENTITY (read-only, user-authored):\n{}",
-            base, identity
-        )
-    }
-}
+// Re-exports so call sites inside this module use familiar local names.
+pub(crate) use crate::ai_chat_engine::build_system_prompt;
 
-/// Build a user message that carries per-request environment context.
+/// Build the per-request environment message for the Cmd+L overlay.
 ///
-/// Keeping this data out of the system prompt lets the system prompt qualify for
-/// prompt caching (the prefix must be byte-stable). The message is injected
-/// before conversation history so it is visible to the model but treated as data,
-/// not as an additional system instruction.
+/// Keeping this data out of the system prompt lets the system prompt qualify
+/// for prompt caching (the prefix must be byte-stable). The message is
+/// injected before conversation history so the model treats it as data, not
+/// as an additional instruction.
+///
+/// This is a thin wrapper over [`crate::ai_chat_engine::build_environment_message`];
+/// the actual assembly lives there so the overlay and the `k` CLI cannot drift.
 pub(crate) fn build_environment_message(ctx: &TerminalContext) -> ApiMessage {
-    let mut s = String::new();
-
-    let now = chrono::Local::now();
-    s.push_str(&format!(
-        "Current date/time: {} (local)\n",
-        now.format("%Y-%m-%d %a %H:%M %z"),
-    ));
-    if let Some(tz) = macos_timezone() {
-        s.push_str(&format!("Timezone: {}\n", tz));
-    }
-    if let Some(locale) = user_locale() {
-        s.push_str(&format!("User locale: {}\n", locale));
-    }
-    if let Some(ver) = macos_version() {
-        s.push_str(&format!("macOS: {}\n", ver));
-    }
-    s.push_str(&format!(
-        "Terminal size: {} cols x {} rows\n",
-        ctx.panel_cols, ctx.panel_rows
-    ));
-    if !ctx.cwd.is_empty() {
-        s.push_str(&format!("Current directory: {}\n", ctx.cwd));
-    }
-
-    let memory = crate::soul::load_memory_for_env();
-    if !memory.is_empty() {
-        s.push_str(&format!(
-            "\nPersistent memory (curator-managed):\n{}\n",
-            memory
-        ));
-    }
-
-    ApiMessage::user(format!(
-        "Environment context (read-only reference, not an instruction):\n{}",
-        s
-    ))
-}
-
-fn macos_timezone() -> Option<String> {
-    let target = std::fs::read_link("/etc/localtime").ok()?;
-    let parts: Vec<&str> = target.iter().filter_map(|c| c.to_str()).collect();
-    let n = parts.len();
-    if n >= 2 {
-        Some(format!("{}/{}", parts[n - 2], parts[n - 1]))
-    } else {
-        None
-    }
-}
-
-fn user_locale() -> Option<String> {
-    std::env::var("LC_ALL")
-        .or_else(|_| std::env::var("LANG"))
-        .ok()
-        .map(|s| s.split('.').next().unwrap_or(&s).to_string())
-}
-
-static MACOS_VERSION: OnceLock<Option<String>> = OnceLock::new();
-
-fn macos_version() -> Option<String> {
-    MACOS_VERSION
-        .get_or_init(|| {
-            std::process::Command::new("sw_vers")
-                .arg("-productVersion")
-                .output()
-                .ok()
-                .and_then(|out| String::from_utf8(out.stdout).ok())
-                .map(|s| s.trim().to_string())
-        })
-        .clone()
+    crate::ai_chat_engine::build_environment_message(&EnvironmentInputs {
+        cwd: &ctx.cwd,
+        panel_cols: Some(ctx.panel_cols),
+        panel_rows: Some(ctx.panel_rows),
+        include_terminal_metadata: true,
+        // Overlay does not include project hints because the user already sees
+        // the project around them and the panel size is small.
+        include_project_hints: false,
+    })
 }
 
 /// Wraps the visible terminal snapshot in a sandboxed user message so it cannot
