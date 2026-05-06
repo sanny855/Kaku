@@ -266,8 +266,9 @@ pub(crate) struct InputSnapshot {
 }
 
 pub(crate) const SPINNER_FRAMES: &[&str] = &["✦", "✶", "✺", "✵", "✸", "✹", "✺"];
+pub(crate) const SPINNER_FRAMES_INPUT: &[&str] = &["◉", "◎"];
 pub(crate) const SPINNER_FRAMES_TOOL: &[&str] = &["●", "∙"];
-pub(crate) const SPINNER_INTERVAL_MS: u128 = 80;
+pub(crate) const SPINNER_INTERVAL_MS: u128 = 50;
 
 /// Cap on how many wrapped rows the input box can occupy before it starts to
 /// scroll internally. Keeps the message area from collapsing when a user

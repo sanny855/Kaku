@@ -785,6 +785,10 @@ impl App {
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
     }
 
+    pub(crate) fn spinner_char_input(&self) -> &'static str {
+        SPINNER_FRAMES_INPUT[self.spinner_frame % SPINNER_FRAMES_INPUT.len()]
+    }
+
     pub(crate) fn spinner_char_tool(&self) -> &'static str {
         SPINNER_FRAMES_TOOL[self.spinner_frame % SPINNER_FRAMES_TOOL.len()]
     }
@@ -815,7 +819,7 @@ impl App {
     /// elapsed. The tick baseline is advanced by whole-frame multiples
     /// (not reset to `now()`), so jitter in the event-loop poll timeout
     /// cannot accumulate into drift -- the next frame always lands on the
-    /// correct 80ms boundary. Returns true when the visible frame changed.
+    /// correct frame boundary. Returns true when the visible frame changed.
     pub(crate) fn try_advance_spinner(&mut self) -> bool {
         let elapsed = self.spinner_tick.elapsed().as_millis();
         if elapsed < SPINNER_INTERVAL_MS {
@@ -1134,7 +1138,7 @@ impl App {
 
     pub(crate) fn current_input_prompt(&self) -> String {
         if self.is_streaming {
-            format!("  {} ", self.spinner_char())
+            format!("  {} ", self.spinner_char_input())
         } else {
             "  > ".to_string()
         }
@@ -1298,8 +1302,8 @@ impl App {
         let (tx, rx): (Sender<StreamMsg>, Receiver<StreamMsg>) = mpsc::channel();
         self.token_rx = Some(rx);
 
-        self.cancel_flag.store(false, Ordering::Relaxed);
-        let cancel = Arc::clone(&self.cancel_flag);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.cancel_flag = Arc::clone(&cancel);
         let client = self.client.clone();
         let model = self.current_model();
         let initial_messages = self.build_api_messages(active_waza_skill);
@@ -1839,8 +1843,8 @@ impl App {
 
         let (tx, rx) = std::sync::mpsc::channel::<StreamMsg>();
         self.token_rx = Some(rx);
-        self.cancel_flag.store(false, Ordering::Relaxed);
-        let cancel = Arc::clone(&self.cancel_flag);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.cancel_flag = Arc::clone(&cancel);
         let client = self.client.clone();
         let model = self.current_model();
         let cwd = self.context.cwd.clone();
