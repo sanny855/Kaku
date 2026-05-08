@@ -23,9 +23,18 @@ set -euo pipefail
 #   --notarize-only  Skip build; notarize existing dist/Kaku.app, upload, tap.
 #   --upload-only    Skip build + notarize; upload existing dist/Kaku.dmg + tap.
 #   --tap-only       Only re-dispatch the Homebrew tap update.
+#
+# Dry-run flag (validates pre-flight, then exits without building or publishing):
+#   --dry-run        Run all pre-flight checks (git, version, gh auth, signing
+#                    identity, notarization creds, release notes, config) and
+#                    exit before make check / cargo build / codesign / notary /
+#                    git push / gh release create. Equivalent to DRY_RUN=1.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
+
+# shellcheck source=lib/preflight.sh
+source "$REPO_ROOT/scripts/lib/preflight.sh"
 
 APP_NAME="Kaku"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/dist}"
@@ -36,6 +45,7 @@ SKIP_TESTS="${SKIP_TESTS:-0}"
 GITHUB_REPO="${GITHUB_REPO:-tw93/Kaku}"
 HOMEBREW_TAP_REPO="${HOMEBREW_TAP_REPO:-tw93/homebrew-tap}"
 REQUIRE_HOMEBREW_TAP_UPDATE="${REQUIRE_HOMEBREW_TAP_UPDATE:-1}"
+DRY_RUN="${DRY_RUN:-0}"
 
 # Resume stage flags.
 SKIP_BUILD=0
@@ -47,31 +57,9 @@ for arg in "$@"; do
         --notarize-only) SKIP_BUILD=1 ;;
         --upload-only)   SKIP_BUILD=1; SKIP_NOTARIZE=1 ;;
         --tap-only)      SKIP_BUILD=1; SKIP_NOTARIZE=1; SKIP_UPLOAD=1 ;;
+        --dry-run)       DRY_RUN=1 ;;
     esac
 done
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $*"
-}
-
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $*"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $*" >&2
-}
-
-die() {
-    log_error "$*"
-    exit 1
-}
 
 is_valid_team_id() {
     [[ "$1" =~ ^[A-Z0-9]{10}$ ]]
@@ -81,34 +69,16 @@ is_developer_id_application_identity() {
     [[ "$1" == Developer\ ID\ Application:* ]]
 }
 
-# Detect version from Cargo.toml if not provided
-get_cargo_version() {
-    grep '^version =' "$REPO_ROOT/kaku/Cargo.toml" | head -n1 | cut -d'"' -f2
-}
-
-# Verify git is clean
-check_clean_git() {
-    log_info "Checking git status..."
-    if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
-        git status
-        die "Working tree is not clean. Commit or stash changes before releasing."
-    fi
-
-    # Check we're on main branch
-    local branch
-    branch=$(git rev-parse --abbrev-ref HEAD)
-    if [[ "$branch" != "main" ]]; then
-        die "Not on main branch (currently on: $branch). Releases must be from main."
-    fi
-
-    log_info "Checking main is synchronized with origin/main..."
-    git fetch origin main
-    local head origin_main
-    head=$(git rev-parse HEAD)
-    origin_main=$(git rev-parse origin/main)
-    if [[ "$head" != "$origin_main" ]]; then
-        die "Local main is not synchronized with origin/main. Pull or push before releasing."
-    fi
+# Run a stage with timing output.
+time_stage() {
+    local name="$1"
+    shift
+    log_info "[stage:$name] starting"
+    local t0 t1
+    t0=$(date +%s)
+    "$@"
+    t1=$(date +%s)
+    log_info "[stage:$name] done in $((t1 - t0))s"
 }
 
 # Verify version consistency across crates
@@ -537,8 +507,21 @@ main() {
         validate_release_profile
         detect_signing_identity
         check_notarization_creds
-        run_checks
-        build_release
+    fi
+
+    if [[ "$DRY_RUN" == "1" ]]; then
+        log_warn "[DRY-RUN] All pre-flight checks passed."
+        log_warn "[DRY-RUN] Would build → notarize → tag V${version} → upload → tap dispatch"
+        log_warn "[DRY-RUN] Expected artifacts: $OUT_DIR/Kaku.dmg, $OUT_DIR/kaku_for_update.zip, $OUT_DIR/kaku_for_update.zip.sha256"
+        log_warn "[DRY-RUN] GitHub repo: $GITHUB_REPO"
+        log_warn "[DRY-RUN] Homebrew tap: $HOMEBREW_TAP_REPO"
+        log_warn "[DRY-RUN] Unset DRY_RUN (or drop --dry-run) to run for real."
+        return 0
+    fi
+
+    if [[ "$SKIP_BUILD" -eq 0 ]]; then
+        time_stage "checks" run_checks
+        time_stage "build" build_release
     else
         log_warn "Skipping build (resume flag)"
         if [[ ! -f "$OUT_DIR/Kaku.dmg" ]]; then
@@ -549,19 +532,19 @@ main() {
 
     if [[ "$SKIP_NOTARIZE" -eq 0 ]]; then
         check_notarization_creds
-        notarize_release
+        time_stage "notarize" notarize_release
     else
         log_warn "Skipping notarize (resume flag)"
     fi
 
     if [[ "$SKIP_UPLOAD" -eq 0 ]]; then
-        create_tag "$version"
-        create_github_release "$version"
+        time_stage "tag" create_tag "$version"
+        time_stage "upload" create_github_release "$version"
     else
         log_warn "Skipping upload (resume flag); tap dispatch only"
     fi
 
-    update_homebrew_tap "$version"
+    time_stage "homebrew-tap" update_homebrew_tap "$version"
 
     log_info "Release $version complete!"
     log_info "Artifacts:"
