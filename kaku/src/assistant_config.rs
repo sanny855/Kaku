@@ -14,16 +14,9 @@ use std::path::{Path, PathBuf};
 /// shell-error fixer). Picked for low cost and low latency.
 pub const DEFAULT_MODEL: &str = "gpt-5.4-mini";
 
-/// Default model for the AI chat overlay (Cmd+L). Stronger than the inline
-/// model because the overlay does multi-turn reasoning + tool calls.
+/// Default deep model for the AI chat overlay (Cmd+L). Stronger than the
+/// simple model because the overlay does multi-turn reasoning + tool calls.
 pub const DEFAULT_CHAT_MODEL: &str = "gpt-5.5";
-
-/// Default fast/cheap alternative for the chat overlay. When set (and
-/// different from `chat_model`), Shift+Tab toggles between the two so the
-/// user can drop to a cheaper model for quick questions without re-editing
-/// config. Defaults to the same model as the inline `#` query so the cost
-/// profile is consistent.
-pub const DEFAULT_FAST_MODEL: &str = "gpt-5.4-mini";
 
 /// Default API base URL for the AI service.
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -129,10 +122,8 @@ pub fn default_assistant_toml_template() -> String {
 #\n\
 # enabled: true enables command analysis suggestions; false disables requests.\n\
 # api_key: provider API key, example: \"sk-xxxx\".\n\
-# model: inline command-completion model (fast + cheap).\n\
-# chat_model: chat overlay model (Cmd+L), the stronger model. Omit to reuse `model`.\n\
-# fast_model: optional fast/cheap model for the chat overlay. When set,\n\
-#             Shift+Tab toggles between chat_model and fast_model.\n\
+# model: Simple Model for quick command generation and lightweight chat.\n\
+# chat_model: Deep Model for Cmd+L, k, and tool-using chat. Omit to reuse `model`.\n\
 # chat_model_choices: optional curated list for the chat overlay. When set,\n\
 #                     Kaku skips auto-fetching from /models and cycles only\n\
 #                     through these entries.\n\
@@ -146,7 +137,6 @@ enabled = true\n\
 # api_key = \"<your_api_key>\"\n\
 model = \"{DEFAULT_MODEL}\"\n\
 chat_model = \"{DEFAULT_CHAT_MODEL}\"\n\
-fast_model = \"{DEFAULT_FAST_MODEL}\"\n\
 base_url = \"{DEFAULT_BASE_URL}\"\n\
 # custom_headers = [\"X-Customer-ID: your-customer-id\"]\n\
 # web_search_provider: optional web search backend for the chat agent.\n\
@@ -371,31 +361,26 @@ api_key = "x"
     }
 
     #[test]
-    fn default_template_pins_chat_and_fast_model() {
+    fn default_template_pins_simple_and_deep_model() {
         // Lock in the shipped defaults so new contributors do not silently
         // change them. Touching either constant must consciously update this
         // assertion.
         let template = default_assistant_toml_template();
         assert!(
             template.contains(&format!("model = \"{}\"", DEFAULT_MODEL)),
-            "template must set inline model = {}",
+            "template must set simple model = {}",
             DEFAULT_MODEL
         );
         assert!(
             template.contains(&format!("chat_model = \"{}\"", DEFAULT_CHAT_MODEL)),
-            "template must set chat_model = {}",
+            "template must set deep model = {}",
             DEFAULT_CHAT_MODEL
         );
         assert!(
-            template.contains(&format!("fast_model = \"{}\"", DEFAULT_FAST_MODEL)),
-            "template must set fast_model = {}",
-            DEFAULT_FAST_MODEL
-        );
-        // Sanity: chat_model and fast_model must differ so Shift+Tab toggles
-        // between two distinct slots out of the box.
-        assert_ne!(
-            DEFAULT_CHAT_MODEL, DEFAULT_FAST_MODEL,
-            "chat_model and fast_model defaults must differ for the Shift+Tab toggle"
+            !template
+                .lines()
+                .any(|line| line.starts_with("fast_model =")),
+            "new default configs must not expose fast_model"
         );
     }
 

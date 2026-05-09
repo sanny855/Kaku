@@ -24,7 +24,7 @@ const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 #[allow(dead_code)]
 pub struct AssistantConfig {
     pub api_key: String,
-    /// Chat overlay model. Falls back to `model` from assistant.toml when omitted.
+    /// Deep chat model. Falls back to the Simple Model from assistant.toml when omitted.
     pub chat_model: String,
     /// Optional user-curated model list for the chat overlay. When set, the chat
     /// overlay cycles only through these via Shift+Tab and skips the auto-fetch step.
@@ -49,8 +49,8 @@ pub struct AssistantConfig {
     /// Hidden escape hatch: path to a custom fetch script (not in TUI or template).
     /// Script receives the URL as $1 and must print Markdown to stdout.
     pub web_fetch_script: Option<String>,
-    /// Optional fast model for the chat overlay. When set (and different from
-    /// chat_model), the overlay offers exactly two model slots via Shift+Tab.
+    /// Simple Model for quick command generation and lightweight chat. When it
+    /// differs from chat_model, the overlay offers it via Shift+Tab.
     pub fast_model: Option<String>,
     /// Optional dedicated model for background memory curation. Falls back to
     /// `chat_model` when unset. Point at a cheaper/faster model to reduce cost.
@@ -104,13 +104,28 @@ impl AssistantConfig {
             .unwrap_or(DEFAULT_MODEL)
             .to_string();
 
-        // chat_model defaults to `model` to preserve current behavior for users
-        // who haven't set an explicit chat model.
+        let legacy_fast_model = parsed
+            .get("fast_model")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        let simple_model = legacy_fast_model.clone().unwrap_or_else(|| model.clone());
+
+        // If an old config had both model and fast_model but no chat_model,
+        // preserve model as the deep slot and fold fast_model into Simple Model.
         let chat_model = parsed
             .get("chat_model")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| model.clone());
+            .unwrap_or_else(|| {
+                if legacy_fast_model.is_some() {
+                    model.clone()
+                } else {
+                    simple_model.clone()
+                }
+            });
 
         let chat_model_choices = parsed
             .get("chat_model_choices")
@@ -159,11 +174,7 @@ impl AssistantConfig {
             .filter(|s| !s.is_empty())
             .map(|s| expand_tilde(s));
 
-        let fast_model = parsed
-            .get("fast_model")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(String::from);
+        let fast_model = (simple_model != chat_model).then_some(simple_model);
 
         let memory_curator_model = parsed
             .get("memory_curator_model")

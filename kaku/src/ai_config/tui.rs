@@ -449,7 +449,11 @@ fn summarize_tool_fields(
     }
 
     if tool == Tool::KakuAssistant {
-        let model = field_value(fields, "Model").and_then(compact_summary_value)?;
+        let model = field_value(fields, "Deep Model")
+            .or_else(|| field_value(fields, "Chat Model"))
+            .or_else(|| field_value(fields, "Simple Model"))
+            .or_else(|| field_value(fields, "Model"))
+            .and_then(compact_summary_value)?;
         let has_api_key = field_value(fields, "API Key").is_some_and(|value| value != "-");
         if has_api_key {
             return Some(format!("Ready · {model}"));
@@ -2744,10 +2748,7 @@ struct KakuAssistantConfig {
     auth_type: String,
     /// Optional extra request headers as `Name: Value`
     custom_headers: Vec<String>,
-    /// Optional fast model for the chat overlay (empty = not set).
-    fast_model: String,
-    /// Chat overlay model. Round-tripped through the TUI even though it is not
-    /// editable here; clearing it would silently push GUI users back onto `model`.
+    /// Deep chat model. Empty means reuse Simple Model.
     chat_model: String,
     /// Optional curated chat-overlay model list. Round-tripped through the TUI
     /// to avoid losing user choices made via direct edits or the GUI.
@@ -2790,7 +2791,6 @@ impl KakuAssistantConfig {
             base_url: resolved_base_url,
             auth_type: "api_key".to_string(),
             custom_headers: vec![],
-            fast_model: String::new(),
             chat_model: String::new(),
             chat_model_choices: Vec::new(),
             web_search_provider: "none".to_string(),
@@ -2818,6 +2818,15 @@ impl KakuAssistantConfig {
         &self.model
     }
 
+    /// Returns the effective deep model, falling back to Simple Model.
+    fn deep_model(&self) -> &str {
+        if self.chat_model.trim().is_empty() {
+            self.model()
+        } else {
+            &self.chat_model
+        }
+    }
+
     /// Returns the base URL (never empty).
     fn base_url(&self) -> &str {
         &self.base_url
@@ -2827,21 +2836,12 @@ impl KakuAssistantConfig {
         &self.auth_type
     }
 
-    fn fast_model(&self) -> &str {
-        &self.fast_model
-    }
-
     fn web_search_provider(&self) -> &str {
         &self.web_search_provider
     }
 
     fn web_search_api_key(&self) -> &str {
         &self.web_search_api_key
-    }
-
-    fn with_fast_model(mut self, fast_model: impl Into<String>) -> Self {
-        self.fast_model = fast_model.into();
-        self
     }
 
     fn with_chat_model(mut self, chat_model: impl Into<String>) -> Self {
@@ -2958,12 +2958,26 @@ fn parse_kaku_assistant_config(raw: &str) -> KakuAssistantConfig {
         })
         .unwrap_or_default();
 
-    let mut cfg = KakuAssistantConfig::new(enabled, api_key, model, base_url)
+    let simple_model = if fast_model.trim().is_empty() {
+        model
+    } else {
+        fast_model.as_str()
+    };
+    let deep_model = if chat_model.trim().is_empty()
+        && !fast_model.trim().is_empty()
+        && !model.trim().is_empty()
+        && model.trim() != simple_model.trim()
+    {
+        model.to_string()
+    } else {
+        chat_model
+    };
+
+    let mut cfg = KakuAssistantConfig::new(enabled, api_key, simple_model, base_url)
         .with_custom_headers(custom_headers)
-        .with_fast_model(fast_model)
         .with_web_search(web_search_provider, web_search_api_key);
     cfg.auth_type = stored_auth_type.to_string();
-    cfg.chat_model = chat_model;
+    cfg.chat_model = deep_model;
     cfg.chat_model_choices = chat_model_choices;
     cfg
 }
@@ -3121,8 +3135,8 @@ fn fetch_kaku_assistant_models(api_key: &str, base_url: &str) -> Vec<String> {
 
 fn normalize_assistant_model_options(
     mut models: Vec<String>,
-    current_model: &str,
-    fast_model: &str,
+    simple_model: &str,
+    deep_model: &str,
 ) -> Vec<String> {
     models.retain(|m| !m.trim().is_empty());
     models.sort();
@@ -3130,7 +3144,7 @@ fn normalize_assistant_model_options(
 
     let mut ordered = Vec::new();
 
-    for preferred in [current_model.trim(), fast_model.trim()] {
+    for preferred in [simple_model.trim(), deep_model.trim()] {
         if preferred.is_empty() || ordered.iter().any(|m| m == preferred) {
             continue;
         }
@@ -3159,7 +3173,7 @@ fn assistant_model_options_for_config(cfg: &KakuAssistantConfig) -> Vec<String> 
             .collect();
     }
 
-    normalize_assistant_model_options(models, cfg.model(), cfg.fast_model())
+    normalize_assistant_model_options(models, cfg.model(), cfg.deep_model())
 }
 
 fn assistant_model_options_for_config_remote(cfg: &KakuAssistantConfig) -> Vec<String> {
@@ -3172,7 +3186,7 @@ fn assistant_model_options_for_config_remote(cfg: &KakuAssistantConfig) -> Vec<S
             .collect();
     }
 
-    normalize_assistant_model_options(models, cfg.model(), cfg.fast_model())
+    normalize_assistant_model_options(models, cfg.model(), cfg.deep_model())
 }
 
 fn extract_kaku_assistant_fields_with_model_options(
@@ -3180,10 +3194,6 @@ fn extract_kaku_assistant_fields_with_model_options(
     model_options: Vec<String>,
 ) -> Vec<FieldEntry> {
     let cfg = parse_kaku_assistant_config(raw);
-    let mut fast_model_options = model_options.clone();
-    if !fast_model_options.iter().any(|m| m == "-") {
-        fast_model_options.insert(0, "-".into());
-    }
 
     let mut fields = vec![
         FieldEntry {
@@ -3193,29 +3203,15 @@ fn extract_kaku_assistant_fields_with_model_options(
             editable: true,
         },
         FieldEntry {
-            key: "Model".into(),
+            key: "Simple Model".into(),
             value: cfg.model().to_string(),
             options: model_options.clone(),
             editable: true,
         },
         FieldEntry {
-            key: "Chat Model".into(),
-            value: if cfg.chat_model().is_empty() {
-                cfg.model().to_string()
-            } else {
-                cfg.chat_model().to_string()
-            },
+            key: "Deep Model".into(),
+            value: cfg.deep_model().to_string(),
             options: model_options.clone(),
-            editable: true,
-        },
-        FieldEntry {
-            key: "Fast Model".into(),
-            value: if cfg.fast_model().is_empty() {
-                "-".into()
-            } else {
-                cfg.fast_model().to_string()
-            },
-            options: fast_model_options,
             editable: true,
         },
         FieldEntry {
@@ -3273,7 +3269,10 @@ fn write_kaku_assistant_config(path: &Path, cfg: &KakuAssistantConfig) -> anyhow
         "# enabled: true enables command analysis suggestions; false disables requests.\n",
     );
     out.push_str("# api_key: provider API key, example: \"sk-xxxx\".\n");
-    out.push_str("# model: model id, example: \"gpt-5.4-mini\" or \"gpt-4o\".\n");
+    out.push_str("# model: Simple Model for quick command generation and lightweight chat.\n");
+    out.push_str(
+        "# chat_model: Deep Model for Cmd+L, k, and tool-using chat. Omit to reuse model.\n",
+    );
     out.push_str("# base_url: chat-completions API root URL.\n");
     out.push_str(
         "# custom_headers: optional extra HTTP headers for enterprise proxies or API gateways.\n",
@@ -3297,8 +3296,7 @@ fn write_kaku_assistant_config(path: &Path, cfg: &KakuAssistantConfig) -> anyhow
         "model = {}\n",
         render_toml_string(cfg.model().trim())
     ));
-    // Round-trip chat_model and chat_model_choices so the GUI overlay's
-    // configuration is preserved even though this TUI does not edit them.
+    // Round-trip deep-model choices so the GUI overlay's model picker is preserved.
     if !cfg.chat_model().trim().is_empty() {
         out.push_str(&format!(
             "chat_model = {}\n",
@@ -3313,12 +3311,6 @@ fn write_kaku_assistant_config(path: &Path, cfg: &KakuAssistantConfig) -> anyhow
                 .collect(),
         );
         out.push_str(&format!("chat_model_choices = {}\n", arr));
-    }
-    if !cfg.fast_model().trim().is_empty() {
-        out.push_str(&format!(
-            "fast_model = {}\n",
-            render_toml_string(cfg.fast_model().trim())
-        ));
     }
     out.push_str(&format!(
         "base_url = {}\n",
@@ -3414,11 +3406,10 @@ fn save_kaku_assistant_field_to_path(
             let enabled = matches!(new_val.trim(), "On" | "on" | "true" | "1");
             KakuAssistantConfig::new(enabled, cfg.api_key(), cfg.model(), cfg.base_url())
                 .with_custom_headers(cfg.custom_headers().to_vec())
-                .with_fast_model(cfg.fast_model())
                 .with_web_search(cfg.web_search_provider(), cfg.web_search_api_key())
                 .with_chat_model_passthrough(&cfg)
         }
-        "Model" => {
+        "Simple Model" | "Model" => {
             let model = if new_val.trim().is_empty() || new_val == "-" {
                 assistant_config::DEFAULT_MODEL
             } else {
@@ -3426,11 +3417,10 @@ fn save_kaku_assistant_field_to_path(
             };
             KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), model, cfg.base_url())
                 .with_custom_headers(cfg.custom_headers().to_vec())
-                .with_fast_model(cfg.fast_model())
                 .with_web_search(cfg.web_search_provider(), cfg.web_search_api_key())
                 .with_chat_model_passthrough(&cfg)
         }
-        "Chat Model" => {
+        "Deep Model" | "Chat Model" => {
             let chat_model = if new_val.trim().is_empty() || new_val == "-" {
                 ""
             } else {
@@ -3440,20 +3430,18 @@ fn save_kaku_assistant_field_to_path(
             // empty) must not be overwritten by the full passthrough's restore logic.
             KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), cfg.model(), cfg.base_url())
                 .with_custom_headers(cfg.custom_headers().to_vec())
-                .with_fast_model(cfg.fast_model())
                 .with_chat_model(chat_model)
                 .with_web_search(cfg.web_search_provider(), cfg.web_search_api_key())
                 .with_chat_model_choices_passthrough(&cfg)
         }
         "Fast Model" => {
-            let fm = if new_val.trim().is_empty() || new_val == "-" {
-                ""
+            let model = if new_val.trim().is_empty() || new_val == "-" {
+                cfg.model()
             } else {
                 new_val.trim()
             };
-            KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), cfg.model(), cfg.base_url())
+            KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), model, cfg.base_url())
                 .with_custom_headers(cfg.custom_headers().to_vec())
-                .with_fast_model(fm)
                 .with_web_search(cfg.web_search_provider(), cfg.web_search_api_key())
                 .with_chat_model_passthrough(&cfg)
         }
@@ -3465,7 +3453,6 @@ fn save_kaku_assistant_field_to_path(
             };
             KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), cfg.model(), base_url)
                 .with_custom_headers(cfg.custom_headers().to_vec())
-                .with_fast_model(cfg.fast_model())
                 .with_web_search(cfg.web_search_provider(), cfg.web_search_api_key())
                 .with_chat_model_passthrough(&cfg)
         }
@@ -3476,7 +3463,6 @@ fn save_kaku_assistant_field_to_path(
             cfg.base_url(),
         )
         .with_custom_headers(cfg.custom_headers().to_vec())
-        .with_fast_model(cfg.fast_model())
         .with_web_search(cfg.web_search_provider(), cfg.web_search_api_key())
         .with_chat_model_passthrough(&cfg),
         "Web Search" => {
@@ -3494,14 +3480,12 @@ fn save_kaku_assistant_field_to_path(
             };
             KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), cfg.model(), cfg.base_url())
                 .with_custom_headers(cfg.custom_headers().to_vec())
-                .with_fast_model(cfg.fast_model())
                 .with_web_search(provider, key)
                 .with_chat_model_passthrough(&cfg)
         }
         "Search Key" => {
             KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), cfg.model(), cfg.base_url())
                 .with_custom_headers(cfg.custom_headers().to_vec())
-                .with_fast_model(cfg.fast_model())
                 .with_web_search(cfg.web_search_provider(), new_val.trim())
                 .with_chat_model_passthrough(&cfg)
         }
@@ -7058,7 +7042,7 @@ provider = "managed:kimi-code"
     }
 
     #[test]
-    fn kaku_assistant_fields_fixed_six_rows() {
+    fn kaku_assistant_fields_show_simple_and_deep_models() {
         let fields = extract_kaku_assistant_fields(
             "enabled = true\napi_key = \"sk-test\"\nmodel = \"gpt-5.4-mini\"\nbase_url = \"https://api.openai.com/v1\"\n",
         );
@@ -7067,9 +7051,8 @@ provider = "managed:kimi-code"
         // Fixed rows always present.
         for key in &[
             "Enabled",
-            "Model",
-            "Chat Model",
-            "Fast Model",
+            "Simple Model",
+            "Deep Model",
             "Base URL",
             "API Key",
             "Web Search",
@@ -7080,26 +7063,70 @@ provider = "managed:kimi-code"
                 key
             );
         }
-        let model = fields.iter().find(|f| f.key == "Model").unwrap();
-        assert_eq!(model.value, "gpt-5.4-mini");
-        let chat_model = fields.iter().find(|f| f.key == "Chat Model").unwrap();
-        assert_eq!(chat_model.value, "gpt-5.4-mini");
-        let fast_model = fields.iter().find(|f| f.key == "Fast Model").unwrap();
-        assert_eq!(fast_model.value, "-");
-        assert!(
-            fast_model.options.iter().any(|opt| opt == "-"),
-            "Fast Model selector must provide a clear option"
-        );
-        assert!(
-            fast_model.options.iter().any(|opt| opt == "gpt-5.4-mini"),
-            "Fast Model options should contain the current Model value"
-        );
+        let simple_model = fields.iter().find(|f| f.key == "Simple Model").unwrap();
+        assert_eq!(simple_model.value, "gpt-5.4-mini");
+        let deep_model = fields.iter().find(|f| f.key == "Deep Model").unwrap();
+        assert_eq!(deep_model.value, "gpt-5.4-mini");
+        assert!(fields.iter().all(|f| f.key != "Fast Model"));
         let api_key = fields.iter().find(|f| f.key == "API Key").unwrap();
         assert_ne!(api_key.value, "-");
     }
 
     #[test]
-    fn normalize_assistant_model_options_keeps_current_and_fast_first() {
+    fn kaku_assistant_legacy_fast_model_collapses_into_simple_model() {
+        let raw = "enabled = true\napi_key = \"sk-test\"\nmodel = \"gpt-5.4\"\nfast_model = \"gpt-5.4-mini\"\nchat_model = \"gpt-5.5\"\nbase_url = \"https://api.openai.com/v1\"\n";
+        let fields = extract_kaku_assistant_fields(raw);
+
+        let simple_model = fields.iter().find(|f| f.key == "Simple Model").unwrap();
+        assert_eq!(simple_model.value, "gpt-5.4-mini");
+        let deep_model = fields.iter().find(|f| f.key == "Deep Model").unwrap();
+        assert_eq!(deep_model.value, "gpt-5.5");
+
+        let cfg = parse_kaku_assistant_config(raw);
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("assistant.toml");
+        write_kaku_assistant_config(&path, &cfg).expect("write config");
+        let saved = std::fs::read_to_string(&path).expect("read saved");
+        assert!(saved.contains("model = \"gpt-5.4-mini\""));
+        assert!(
+            !saved.lines().any(|l| {
+                let head = l.split('#').next().unwrap_or("").trim_start();
+                head.starts_with("fast_model =")
+            }),
+            "fast_model should be folded into model on save: {}",
+            saved
+        );
+    }
+
+    #[test]
+    fn kaku_assistant_legacy_fast_model_preserves_old_model_as_deep_model() {
+        let raw = "enabled = true\napi_key = \"sk-test\"\nmodel = \"gpt-5.4\"\nfast_model = \"gpt-5.4-mini\"\nbase_url = \"https://api.openai.com/v1\"\n";
+        let fields = extract_kaku_assistant_fields(raw);
+
+        let simple_model = fields.iter().find(|f| f.key == "Simple Model").unwrap();
+        assert_eq!(simple_model.value, "gpt-5.4-mini");
+        let deep_model = fields.iter().find(|f| f.key == "Deep Model").unwrap();
+        assert_eq!(deep_model.value, "gpt-5.4");
+
+        let cfg = parse_kaku_assistant_config(raw);
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("assistant.toml");
+        write_kaku_assistant_config(&path, &cfg).expect("write config");
+        let saved = std::fs::read_to_string(&path).expect("read saved");
+        assert!(saved.contains("model = \"gpt-5.4-mini\""));
+        assert!(saved.contains("chat_model = \"gpt-5.4\""));
+        assert!(
+            !saved.lines().any(|l| {
+                let head = l.split('#').next().unwrap_or("").trim_start();
+                head.starts_with("fast_model =")
+            }),
+            "fast_model should be folded into model on save: {}",
+            saved
+        );
+    }
+
+    #[test]
+    fn normalize_assistant_model_options_keeps_simple_and_deep_first() {
         let models = normalize_assistant_model_options(
             vec![
                 "gpt-5.4-mini".into(),
@@ -7193,7 +7220,7 @@ provider = "managed:kimi-code"
     }
 
     #[test]
-    fn kaku_assistant_chat_model_field_is_editable() {
+    fn kaku_assistant_deep_model_field_is_editable() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("assistant.toml");
         std::fs::write(
@@ -7202,16 +7229,16 @@ provider = "managed:kimi-code"
         )
         .expect("write temp config");
 
-        save_kaku_assistant_field_to_path(&path, "Chat Model", "claude-sonnet-4-6")
-            .expect("save chat model");
+        save_kaku_assistant_field_to_path(&path, "Deep Model", "claude-sonnet-4-6")
+            .expect("save deep model");
         let saved = std::fs::read_to_string(&path).expect("read saved");
         assert!(saved.contains("model = \"gpt-5.4-mini\""));
         assert!(saved.contains("chat_model = \"claude-sonnet-4-6\""));
     }
 
     #[test]
-    fn kaku_assistant_chat_model_clears_when_dash_selected() {
-        // Regression: picking "-" in the Chat Model selector must drop the key,
+    fn kaku_assistant_deep_model_clears_when_dash_selected() {
+        // Regression: picking "-" in the Deep Model selector must drop the key,
         // not silently restore the previous value via passthrough.
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("assistant.toml");
@@ -7221,8 +7248,8 @@ provider = "managed:kimi-code"
         )
         .expect("write temp config");
 
-        save_kaku_assistant_field_to_path(&path, "Chat Model", "-")
-            .expect("save cleared chat model");
+        save_kaku_assistant_field_to_path(&path, "Deep Model", "-")
+            .expect("save cleared deep model");
         let saved = std::fs::read_to_string(&path).expect("read saved");
         assert!(
             !saved.lines().any(|l| {

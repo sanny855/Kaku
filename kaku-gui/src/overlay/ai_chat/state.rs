@@ -632,7 +632,7 @@ impl App {
     ) -> Self {
         // Model resolution priority:
         // 1. chat_model_choices: user-curated list, use as-is
-        // 2. fast_model set and different from chat_model: two-slot mode, no API fetch
+        // 2. Simple Model differs from Deep Model: two-slot mode, no API fetch
         // 3. Neither: fall back to API fetch for full model list
         let (available_models, model_fetch, model_fetch_rx) = if !chat_model_choices.is_empty() {
             let mut models = chat_model_choices;
@@ -1759,19 +1759,19 @@ impl App {
         } else {
             cfg.chat_model_choices.join(", ")
         };
-        let fast = cfg.fast_model.as_deref().unwrap_or("(not set)");
+        let simple = cfg.fast_model.as_deref().unwrap_or(&cfg.chat_model);
         let web_search = cfg.web_search_provider.as_deref().unwrap_or("disabled");
         let text = format!(
             "provider          {provider}\n\
-             chat_model        {model}\n\
-             fast_model        {fast}\n\
+             simple_model      {simple}\n\
+             deep_model        {model}\n\
              chat_model_choices {choices}\n\
              base_url          {url}\n\
              chat_tools_enabled {tools}\n\
              web_search        {ws}",
             provider = cfg.provider,
             model = cfg.chat_model,
-            fast = fast,
+            simple = simple,
             choices = model_list,
             url = cfg.base_url,
             tools = cfg.chat_tools_enabled,

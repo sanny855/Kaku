@@ -20,8 +20,8 @@ Selecting a provider auto-fills the base URL and populates the model dropdown.
 Press `Cmd + L` to open the built-in AI chat panel. It streams Markdown answers,
 highlights code blocks, can include terminal context, and can use approved tools
 for project files, shell commands, web search, and memory. Press `Shift + Tab`
-inside the panel to toggle between `chat_model` and `fast_model` when both are
-configured.
+inside the panel to toggle between the Simple Model and Deep Model when they
+are different.
 
 From a shell, use `k` or `kaku chat` for the same conversation store:
 
@@ -60,9 +60,8 @@ The config lives at `~/.config/kaku/assistant.toml`:
 | :--- | :--- |
 | `enabled` | `true` to enable, `false` to disable |
 | `api_key` | Your provider API key |
-| `model` | Inline `#` command-generation model, e.g. `gpt-5.4-mini` |
-| `chat_model` | Primary `Cmd + L` / `k` chat model |
-| `fast_model` | Optional fast chat model toggled with `Shift + Tab` |
+| `model` | Simple Model for `#` command generation, command fixes, and lightweight chat |
+| `chat_model` | Deep Model for primary `Cmd + L` / `k` chat and tool use |
 | `chat_model_choices` | Optional curated list of chat models for the overlay picker |
 | `base_url` | OpenAI-compatible API root URL |
 | `custom_headers` | Extra HTTP headers for enterprise proxies, e.g. `["X-Customer-ID: your-id"]` |
@@ -72,6 +71,9 @@ The config lives at `~/.config/kaku/assistant.toml`:
 | `chat_tools_enabled` | Set to `false` to disable tool calling for chat providers without tool support |
 | `auth_type` | Advanced auth mode, e.g. `api_key`, `copilot`, or `codex` |
 | `memory_curator_model` | Optional cheaper model for background memory curation |
+
+Older configs may still contain `fast_model`; Kaku treats it as the Simple Model
+and folds it back into `model` the next time the assistant settings are saved.
 
 ---
 

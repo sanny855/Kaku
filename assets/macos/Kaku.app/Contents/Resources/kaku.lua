@@ -818,8 +818,11 @@ local function refresh_ai_fix_settings()
   ai_fix_enabled = read_ai_setting("enabled", ai_fix_enabled and "1" or "0") ~= "0"
   ai_fix_api_base_url = read_ai_setting("base_url", ai_fix_api_base_url)
   ai_fix_api_key = read_ai_setting("api_key", ai_fix_api_key)
-  local base_model = read_ai_setting("model", ai_fix_model)
-  ai_fix_model = read_ai_setting("fast_model", base_model)
+  ai_fix_model = read_ai_setting("model", ai_fix_model)
+  local legacy_fast_model = read_ai_setting("fast_model", "")
+  if legacy_fast_model ~= "" then
+    ai_fix_model = legacy_fast_model
+  end
   ai_fix_custom_headers = read_ai_custom_headers("custom_headers")
   local proxy_val = read_ai_setting("proxy", "")
   ai_fix_proxy = (proxy_val ~= "") and proxy_val or nil
