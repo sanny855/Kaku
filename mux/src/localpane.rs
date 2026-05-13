@@ -371,7 +371,13 @@ impl Pane for LocalPane {
         }
 
         if let Some(notify) = notify {
-            emit_output_for_pane(self.pane_id, &notify);
+            // Reset cursor visibility before printing exit message;
+            // the child may have hidden the cursor (DECTCEM ESC[?25l)
+            // and never restored it (e.g. SSH to a server that reboots).
+            emit_output_for_pane(self.pane_id, &format!("\x1b[?25h{notify}"));
+        } else if !terse.is_empty() {
+            // ExitBehaviorMessaging::None — still reset cursor visibility
+            emit_output_for_pane(self.pane_id, "\x1b[?25h");
         }
 
         match &*proc {
