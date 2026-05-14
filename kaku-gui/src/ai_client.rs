@@ -312,7 +312,10 @@ impl ApiMessage {
 
 pub fn should_roundtrip_reasoning_content(model: &str) -> bool {
     let model = model.to_ascii_lowercase();
-    model.contains("deepseek") || model.contains("kimi") || model.contains("mimo")
+    model.contains("deepseek")
+        || model.contains("kimi")
+        || model.contains("mimo")
+        || model.contains("glm")
 }
 
 // ─── Tool calling ─────────────────────────────────────────────────────────────
@@ -713,7 +716,12 @@ fn reasoning_delta_text<'a>(
         .or_else(|| choice["reasoning"].as_str())
 }
 
-// ─── Inline <think> tag filter ───────────────────────────────────────────────
+// ─── Inline <think> / <thinking> tag filter ─────────────────────────────────
+
+const THINK_TAG_PAIRS: &[(&str, &str)] = &[
+    ("<think>", "</think>"),
+    ("<thinking>", "</thinking>"),
+];
 
 enum ThinkSegment {
     Token(String),
@@ -722,6 +730,7 @@ enum ThinkSegment {
 
 struct InlineThinkFilter {
     inside_think: bool,
+    close_tag: &'static str,
     pending: String,
 }
 
@@ -729,8 +738,38 @@ impl InlineThinkFilter {
     fn new() -> Self {
         Self {
             inside_think: false,
+            close_tag: "",
             pending: String::new(),
         }
+    }
+
+    fn find_open_tag(s: &str) -> Option<(usize, &'static str, &'static str)> {
+        let mut best: Option<(usize, &'static str, &'static str)> = None;
+        for &(open, close) in THINK_TAG_PAIRS {
+            if let Some(pos) = s.find(open) {
+                if best.map_or(true, |(bp, _, _)| pos < bp) {
+                    best = Some((pos, open, close));
+                }
+            }
+        }
+        best
+    }
+
+    fn safe_emit_len_multi(pending: &str, tags: &[&str]) -> usize {
+        let len = pending.len();
+        let mut min_safe = len;
+        for tag in tags {
+            for i in 1..=tag.len().min(len) {
+                if tag
+                    .as_bytes()
+                    .starts_with(&pending.as_bytes()[len - i..])
+                {
+                    min_safe = min_safe.min(len - i);
+                    break;
+                }
+            }
+        }
+        min_safe
     }
 
     fn feed(&mut self, chunk: &str) -> Vec<ThinkSegment> {
@@ -738,30 +777,32 @@ impl InlineThinkFilter {
         let mut out = Vec::new();
         loop {
             if self.inside_think {
-                if let Some(pos) = self.pending.find("</think>") {
+                if let Some(pos) = self.pending.find(self.close_tag) {
                     let reasoning = &self.pending[..pos];
                     if !reasoning.is_empty() {
                         out.push(ThinkSegment::Reasoning(reasoning.to_string()));
                     }
-                    self.pending = self.pending[pos + "</think>".len()..].to_string();
+                    self.pending = self.pending[pos + self.close_tag.len()..].to_string();
                     self.inside_think = false;
                 } else {
-                    let safe = self.safe_emit_len("</think>");
+                    let safe = Self::safe_emit_len_multi(&self.pending, &[self.close_tag]);
                     if safe > 0 {
                         out.push(ThinkSegment::Reasoning(self.pending[..safe].to_string()));
                         self.pending = self.pending[safe..].to_string();
                     }
                     break;
                 }
-            } else if let Some(pos) = self.pending.find("<think>") {
+            } else if let Some((pos, open, close)) = Self::find_open_tag(&self.pending) {
                 let text = &self.pending[..pos];
                 if !text.is_empty() {
                     out.push(ThinkSegment::Token(text.to_string()));
                 }
-                self.pending = self.pending[pos + "<think>".len()..].to_string();
+                self.pending = self.pending[pos + open.len()..].to_string();
+                self.close_tag = close;
                 self.inside_think = true;
             } else {
-                let safe = self.safe_emit_len("<think>");
+                let open_tags: Vec<&str> = THINK_TAG_PAIRS.iter().map(|&(o, _)| o).collect();
+                let safe = Self::safe_emit_len_multi(&self.pending, &open_tags);
                 if safe > 0 {
                     out.push(ThinkSegment::Token(self.pending[..safe].to_string()));
                     self.pending = self.pending[safe..].to_string();
@@ -783,19 +824,6 @@ impl InlineThinkFilter {
             }
         }
         out
-    }
-
-    fn safe_emit_len(&self, tag: &str) -> usize {
-        let len = self.pending.len();
-        for i in 1..=tag.len().min(len) {
-            if tag
-                .as_bytes()
-                .starts_with(&self.pending.as_bytes()[len - i..])
-            {
-                return len - i;
-            }
-        }
-        len
     }
 }
 
@@ -1002,5 +1030,59 @@ mod tests {
         }
         assert_eq!(reasoning, "ab");
         assert_eq!(tokens, "xy");
+    }
+
+    #[test]
+    fn think_filter_thinking_tags() {
+        let mut f = InlineThinkFilter::new();
+        let segs = f.feed("<thinking>deep</thinking>answer");
+        let mut tokens = String::new();
+        let mut reasoning = String::new();
+        for s in segs {
+            match s {
+                ThinkSegment::Token(t) => tokens.push_str(&t),
+                ThinkSegment::Reasoning(r) => reasoning.push_str(&r),
+            }
+        }
+        assert_eq!(reasoning, "deep");
+        assert_eq!(tokens, "answer");
+    }
+
+    #[test]
+    fn think_filter_mixed_tag_variants() {
+        let mut f = InlineThinkFilter::new();
+        let segs = f.feed("<think>a</think>x<thinking>b</thinking>y");
+        let mut tokens = String::new();
+        let mut reasoning = String::new();
+        for s in segs {
+            match s {
+                ThinkSegment::Token(t) => tokens.push_str(&t),
+                ThinkSegment::Reasoning(r) => reasoning.push_str(&r),
+            }
+        }
+        assert_eq!(reasoning, "ab");
+        assert_eq!(tokens, "xy");
+    }
+
+    #[test]
+    fn think_filter_thinking_split_across_chunks() {
+        let mut f = InlineThinkFilter::new();
+        let mut tokens = Vec::new();
+        let mut reasoning = Vec::new();
+        let collect =
+            |segs: Vec<ThinkSegment>, tokens: &mut Vec<String>, reasoning: &mut Vec<String>| {
+                for s in segs {
+                    match s {
+                        ThinkSegment::Token(t) => tokens.push(t),
+                        ThinkSegment::Reasoning(r) => reasoning.push(r),
+                    }
+                }
+            };
+        collect(f.feed("<thinki"), &mut tokens, &mut reasoning);
+        collect(f.feed("ng>reason</thinki"), &mut tokens, &mut reasoning);
+        collect(f.feed("ng>visible"), &mut tokens, &mut reasoning);
+        collect(f.flush(), &mut tokens, &mut reasoning);
+        assert_eq!(reasoning.join(""), "reason");
+        assert_eq!(tokens.join(""), "visible");
     }
 }

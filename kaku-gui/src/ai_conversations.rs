@@ -418,17 +418,30 @@ fn migrate_visible_reasoning_blocks(mut msg: PersistedMessage) -> PersistedMessa
 }
 
 fn split_visible_reasoning_blocks(content: &str) -> (String, String) {
-    const OPEN: &str = "<think>";
-    const CLOSE: &str = "</think>";
+    const TAG_PAIRS: &[(&str, &str)] = &[
+        ("<think>", "</think>"),
+        ("<thinking>", "</thinking>"),
+    ];
 
     let mut visible = String::new();
     let mut reasoning = String::new();
     let mut rest = content;
 
-    while let Some(start) = rest.find(OPEN) {
+    loop {
+        let mut best: Option<(usize, &str, &str)> = None;
+        for &(open, close) in TAG_PAIRS {
+            if let Some(pos) = rest.find(open) {
+                if best.map_or(true, |(bp, _, _)| pos < bp) {
+                    best = Some((pos, open, close));
+                }
+            }
+        }
+        let Some((start, open, close)) = best else {
+            break;
+        };
         visible.push_str(&rest[..start]);
-        let after_open = &rest[start + OPEN.len()..];
-        let Some(end) = after_open.find(CLOSE) else {
+        let after_open = &rest[start + open.len()..];
+        let Some(end) = after_open.find(close) else {
             visible.push_str(&rest[start..]);
             return (visible, reasoning);
         };
@@ -439,7 +452,7 @@ fn split_visible_reasoning_blocks(content: &str) -> (String, String) {
             }
             reasoning.push_str(block);
         }
-        rest = &after_open[end + CLOSE.len()..];
+        rest = &after_open[end + close.len()..];
     }
 
     visible.push_str(rest);
@@ -590,6 +603,22 @@ mod tests {
         let migrated = migrate_visible_reasoning_blocks(msg);
         assert!(migrated.reasoning_content.is_empty());
         assert!(migrated.content.contains("<think>"));
+    }
+
+    #[test]
+    fn split_visible_reasoning_blocks_handles_thinking_tags() {
+        let input = "<thinking>\nreason\n</thinking>\n\nAnswer here.";
+        let (content, reasoning) = split_visible_reasoning_blocks(input);
+        assert_eq!(content, "Answer here.");
+        assert_eq!(reasoning, "reason");
+    }
+
+    #[test]
+    fn split_visible_reasoning_blocks_handles_mixed_tags() {
+        let input = "<think>a</think>x<thinking>b</thinking>y";
+        let (content, reasoning) = split_visible_reasoning_blocks(input);
+        assert_eq!(content, "xy");
+        assert_eq!(reasoning, "a\nb");
     }
 
     #[test]
