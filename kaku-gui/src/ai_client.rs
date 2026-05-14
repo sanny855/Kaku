@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 use crate::ai_auth;
-use reqwest::header::{HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 const DEFAULT_MODEL: &str = "gpt-5.4-mini";
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -476,16 +476,17 @@ impl AiClient {
 
     fn apply_custom_headers(
         &self,
-        mut req: reqwest::blocking::RequestBuilder,
+        req: reqwest::blocking::RequestBuilder,
     ) -> Result<reqwest::blocking::RequestBuilder> {
+        let mut headers = HeaderMap::new();
         for (name, value) in &self.config.custom_headers {
             let header_name = HeaderName::from_bytes(name.as_bytes())
                 .with_context(|| format!("invalid custom header name `{name}`"))?;
             let header_value = HeaderValue::from_str(value)
                 .with_context(|| format!("invalid custom header value for `{name}`"))?;
-            req = req.header(header_name, header_value);
+            headers.insert(header_name, header_value);
         }
-        Ok(req)
+        Ok(req.headers(headers))
     }
 
     /// Single chat step with optional tool support.
@@ -539,7 +540,7 @@ impl AiClient {
                 break;
             }
             let line = line.context("read SSE line")?;
-            let Some(data) = line.strip_prefix("data: ") else {
+            let Some(data) = sse_data_payload(&line) else {
                 continue;
             };
             if data.trim() == "[DONE]" {
@@ -716,6 +717,10 @@ fn reasoning_delta_text<'a>(
         .or_else(|| choice["reasoning"].as_str())
 }
 
+fn sse_data_payload(line: &str) -> Option<&str> {
+    line.strip_prefix("data:").map(str::trim_start)
+}
+
 // ─── Inline <think> / <thinking> tag filter ─────────────────────────────────
 
 const THINK_TAG_PAIRS: &[(&str, &str)] = &[("<think>", "</think>"), ("<thinking>", "</thinking>")];
@@ -841,8 +846,10 @@ fn detect_provider_with_auth(base_url: &str, auth_type: &str) -> &'static str {
 mod tests {
     use super::{
         detect_provider_with_auth, parse_custom_headers, reasoning_delta_text,
-        should_roundtrip_reasoning_content, ApiMessage, InlineThinkFilter, ThinkSegment,
+        should_roundtrip_reasoning_content, sse_data_payload, AiClient, ApiMessage,
+        AssistantConfig, InlineThinkFilter, ThinkSegment,
     };
+    use reqwest::header::{AUTHORIZATION, USER_AGENT};
 
     #[test]
     fn detects_copilot_and_codex_and_falls_back_to_custom() {
@@ -924,6 +931,13 @@ mod tests {
     }
 
     #[test]
+    fn sse_data_payload_accepts_optional_space_after_colon() {
+        assert_eq!(sse_data_payload("data:{\"x\":1}"), Some("{\"x\":1}"));
+        assert_eq!(sse_data_payload("data: {\"x\":1}"), Some("{\"x\":1}"));
+        assert_eq!(sse_data_payload("event: message"), None);
+    }
+
+    #[test]
     fn reasoning_roundtrip_is_limited_to_reasoning_models() {
         assert!(should_roundtrip_reasoning_content("deepseek-v4-pro"));
         assert!(should_roundtrip_reasoning_content("Kimi-K2.5"));
@@ -955,6 +969,47 @@ mod tests {
         let reserved =
             toml::Value::Array(vec![toml::Value::String("Authorization: nope".to_string())]);
         assert!(parse_custom_headers(Some(&reserved)).is_err());
+    }
+
+    #[test]
+    fn custom_headers_replace_existing_user_agent_without_dropping_auth() {
+        let config = AssistantConfig {
+            api_key: "test-token".to_string(),
+            chat_model: "gpt-test".to_string(),
+            chat_model_choices: Vec::new(),
+            base_url: "https://example.test/v1".to_string(),
+            custom_headers: vec![
+                ("User-Agent".to_string(), "Kaku-Test".to_string()),
+                ("X-Customer-ID".to_string(), "acme".to_string()),
+            ],
+            provider: "Custom".to_string(),
+            auth_type: "api_key".to_string(),
+            chat_tools_enabled: true,
+            web_search_provider: None,
+            web_search_api_key: None,
+            web_fetch_script: None,
+            fast_model: None,
+            memory_curator_model: None,
+        };
+        let client = AiClient::new(config);
+        let request = reqwest::blocking::Client::new()
+            .post("https://example.test/v1/chat/completions")
+            .header(USER_AGENT, "reqwest-default");
+
+        let request = client.apply_auth_headers(request).unwrap().build().unwrap();
+        let headers = request.headers();
+        let user_agents = headers.get_all(USER_AGENT).iter().collect::<Vec<_>>();
+
+        assert_eq!(user_agents.len(), 1);
+        assert_eq!(user_agents[0], "Kaku-Test");
+        assert_eq!(
+            headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()),
+            Some("Bearer test-token")
+        );
+        assert_eq!(
+            headers.get("X-Customer-ID").and_then(|v| v.to_str().ok()),
+            Some("acme")
+        );
     }
 
     #[test]
