@@ -9,6 +9,8 @@ use tiny_skia::{BlendMode, FillRule, Paint, Path, PathBuilder, PixmapMut, Stroke
 use wezterm_font::units::{IntPixelLength, PixelLength};
 use window::{BitmapImage, Image, Point, Rect, Size};
 
+const BAR_CURSOR_POLY_STYLE: PolyStyle = PolyStyle::OutlineHeavy;
+
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum PolyAA {
     AntiAlias,
@@ -5118,7 +5120,7 @@ impl GlyphCache {
                             PolyCommand::LineTo(BlockCoord::Zero, BlockCoord::One),
                         ],
                         intensity: BlockAlpha::Full,
-                        style: PolyStyle::OutlineHeavy,
+                        style: BAR_CURSOR_POLY_STYLE,
                     }],
                     &mut buffer,
                     PolyAA::AntiAlias,
@@ -6046,4 +6048,14 @@ fn fill_rect(buffer: &mut Image, x: Range<f32>, y: Range<f32>, intensity: BlockA
         Transform::identity(),
         None,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PolyStyle, BAR_CURSOR_POLY_STYLE};
+
+    #[test]
+    fn bar_cursor_uses_heavy_outline() {
+        assert_eq!(BAR_CURSOR_POLY_STYLE, PolyStyle::OutlineHeavy);
+    }
 }
