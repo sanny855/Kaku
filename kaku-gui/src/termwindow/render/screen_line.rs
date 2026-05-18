@@ -28,15 +28,16 @@ fn block_cursor_vertical_bounds(
     (pos_y + y, pos_y + cell_height - y)
 }
 
+/// A focused block cursor is remapped to `CursorShape::Default` and painted as
+/// a solid full-cell box. A raw `BlinkingBlock`/`SteadyBlock` render shape only
+/// reaches here for the unfocused active pane, which is drawn as a hollow
+/// outline via `cursor_sprite`, so it must not take the full-cell path.
 fn uses_full_cell_block_cursor(render_shape: CursorShape, effective_shape: CursorShape) -> bool {
-    matches!(
-        render_shape,
-        CursorShape::BlinkingBlock | CursorShape::SteadyBlock
-    ) || (render_shape == CursorShape::Default
+    render_shape == CursorShape::Default
         && matches!(
             effective_shape,
             CursorShape::BlinkingBlock | CursorShape::SteadyBlock
-        ))
+        )
 }
 
 fn cursor_render_layer(shape: CursorShape) -> usize {
@@ -975,12 +976,14 @@ mod tests {
     }
 
     #[test]
-    fn directly_configured_block_cursor_uses_full_cell() {
-        assert!(uses_full_cell_block_cursor(
+    fn unfocused_block_cursor_renders_hollow_not_full_cell() {
+        // A raw block render shape only occurs for the unfocused active pane,
+        // which is painted as a hollow outline rather than a solid full cell.
+        assert!(!uses_full_cell_block_cursor(
             CursorShape::SteadyBlock,
             CursorShape::SteadyBlock,
         ));
-        assert!(uses_full_cell_block_cursor(
+        assert!(!uses_full_cell_block_cursor(
             CursorShape::BlinkingBlock,
             CursorShape::BlinkingBlock,
         ));

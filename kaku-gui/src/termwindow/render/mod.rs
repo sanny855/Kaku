@@ -783,7 +783,9 @@ impl crate::TermWindow {
                         Some(CursorShape::Default)
                     }
                     // Keep inactive panes cursorless for a cleaner split view.
-                    _shape if !focused_and_active => None,
+                    _shape if !params.is_active_pane => None,
+                    // Active pane while the window is unfocused: keep the cursor
+                    // visible as a hollow outline instead of hiding it entirely.
                     shape => Some(shape),
                 }
             } else {
