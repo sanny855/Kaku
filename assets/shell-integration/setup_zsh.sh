@@ -560,7 +560,6 @@ echo -e "  ${GREEN}✓${NC} ${BOLD}Tools${NC}       Installed Zsh plugins ${NC}(
 # Copy Starship Config (if not exists)
 if [[ ! -f "$STARSHIP_CONFIG" ]]; then
 	if [[ -f "$VENDOR_DIR/starship.toml" ]]; then
-		local starship_dir
 		starship_dir="$(dirname "$STARSHIP_CONFIG")"
 		if [[ -L "$starship_dir" || ( -e "$starship_dir" && ! -w "$starship_dir" ) ]]; then
 			echo -e "  ${YELLOW}!${NC} ${BOLD}Config${NC}      Skipped starship.toml ${NC}($starship_dir is read-only or a symlink)${NC}"
