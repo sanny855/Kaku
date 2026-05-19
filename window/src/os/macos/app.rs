@@ -725,6 +725,20 @@ extern "C" fn application_did_finish_launching(this: &mut Object, _sel: Sel, _no
             object: nil
         ];
         log::debug!("registered for NSTextInputContextKeyboardSelectionDidChangeNotification");
+
+        // Register for system Light/Dark appearance changes. Windows pin their
+        // NSWindow appearance, which suppresses viewDidChangeEffectiveAppearance,
+        // so already-open windows must be told explicitly to re-resolve theme.
+        let distributed_center: id =
+            msg_send![class!(NSDistributedNotificationCenter), defaultCenter];
+        let appearance_notification_name = nsstring("AppleInterfaceThemeChangedNotification");
+        let () = msg_send![distributed_center,
+            addObserver: this as *mut Object
+            selector: sel!(systemAppearanceDidChange:)
+            name: *appearance_notification_name
+            object: nil
+        ];
+        log::debug!("registered for AppleInterfaceThemeChangedNotification");
     }
     sync_global_hotkey_registration();
 }
@@ -880,6 +894,21 @@ extern "C" fn keyboard_selection_did_change(
         "NSTextInputContextKeyboardSelectionDidChangeNotification received, syncing global hotkey"
     );
     sync_global_hotkey_registration();
+}
+
+/// Called when the system Light/Dark appearance changes. The broadcast is
+/// deferred onto the next main-thread pass so `NSApp.effectiveAppearance` is
+/// settled before each window re-resolves its color scheme.
+extern "C" fn system_appearance_did_change(
+    _self: &mut Object,
+    _sel: Sel,
+    _notification: *mut Object,
+) {
+    log::debug!("AppleInterfaceThemeChangedNotification received, refreshing open windows");
+    promise::spawn::spawn_into_main_thread(async move {
+        super::window::broadcast_system_appearance_change();
+    })
+    .detach();
 }
 
 #[cfg(test)]
@@ -1557,6 +1586,10 @@ fn get_class() -> &'static Class {
             cls.add_method(
                 sel!(keyboardSelectionDidChange:),
                 keyboard_selection_did_change as extern "C" fn(&mut Object, Sel, *mut Object),
+            );
+            cls.add_method(
+                sel!(systemAppearanceDidChange:),
+                system_appearance_did_change as extern "C" fn(&mut Object, Sel, *mut Object),
             );
         }
 

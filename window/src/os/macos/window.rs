@@ -1216,6 +1216,30 @@ impl HasWindowHandle for Window {
     }
 }
 
+/// Notify every open window that the system Light/Dark appearance changed.
+///
+/// Windows pin their `NSWindow` appearance (see `apply_window_appearance`),
+/// which means a system appearance change no longer alters their views'
+/// `effectiveAppearance`, so `viewDidChangeEffectiveAppearance` never fires
+/// for already-open windows. Newly created windows pick up the appearance at
+/// creation time, which is why only stale windows looked wrong. This re-runs
+/// the same `AppearanceChanged` path that the view callback would have used.
+pub(crate) fn broadcast_system_appearance_change() {
+    let Some(conn) = Connection::get() else {
+        return;
+    };
+    let appearance = conn.get_appearance();
+    log::debug!("system appearance changed to {appearance:?}, notifying open windows");
+    let windows: Vec<_> = conn.windows.borrow().values().cloned().collect();
+    for window in windows {
+        if let Ok(inner) = window.try_borrow() {
+            if let Some(window_view) = WindowView::get_this(unsafe { &**inner.view }) {
+                window_view.dispatch_event(WindowEvent::AppearanceChanged(appearance));
+            }
+        }
+    }
+}
+
 /// @see https://developer.apple.com/documentation/appkit/nswindow/level
 pub type NSWindowLevel = i64;
 
