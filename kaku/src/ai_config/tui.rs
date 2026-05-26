@@ -1,33 +1,4 @@
 //! Interactive TUI for `kaku ai`.
-//!
-//! # Layout (current)
-//!
-//! Today this is one ~5.6k-line file because the V0.10.0 work concentrated
-//! on shipping correct behavior for every provider rather than landing a
-//! refactor. The natural split (planned for V0.11) is per-provider adapter
-//! modules. The trait skeleton in [`provider_adapter`] anchors that split:
-//! it is intentionally minimal so existing code keeps working unchanged
-//! while future PRs can move one provider at a time behind the trait.
-//!
-//! ```text
-//! ai_config/
-//!   tui.rs              // event loop + screen state (still here)
-//!   tui/ui.rs           // already its own file (rendering)
-//!   providers/
-//!     mod.rs            // pub use of each adapter
-//!     kaku_assistant.rs // implements ProviderAdapter
-//!     claude.rs
-//!     codex.rs
-//!     copilot.rs
-//!     kimi.rs
-//!     antigravity.rs
-//!     gemini_cli.rs     // external Gemini CLI status (NOT the removed API)
-//!     droid.rs
-//! ```
-//!
-//! When extracting an adapter, leave the existing inline code in place and
-//! delegate to the new module — keeping the `Tool` enum match arms thin lets
-//! the migration land in reviewable chunks.
 
 use crate::assistant_config;
 use crate::utils::{is_jsonc_path, open_path_in_editor, parse_json_or_jsonc, write_atomic};
@@ -54,66 +25,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 mod ui;
-
-/// Trait skeleton for the planned per-provider split. Empty body until V0.11
-/// — extracting an adapter is then "make `XYZ` implement `ProviderAdapter`,
-/// move its match arms behind dynamic dispatch, delete the inline code".
-///
-/// Kept here (not in a separate file) so adding a new provider doesn't have
-/// to bounce between two files; once two providers have moved, promote this
-/// to `ai_config/provider_adapter.rs` and shed the doc comment above.
-#[allow(dead_code)]
-pub(crate) mod provider_adapter {
-    use super::Tool;
-    use std::path::{Path, PathBuf};
-
-    /// Boxed per-provider state. Each provider's typed config
-    /// (KakuAssistantConfig, ClaudeConfig, ...) implements this so the TUI
-    /// dispatcher can hold adapters polymorphically without binding to a
-    /// concrete config type.
-    pub(crate) trait ProviderState: std::fmt::Debug + Send {
-        /// True iff the user has enabled this provider in their config.
-        fn enabled(&self) -> bool;
-        /// Currently-selected model name, if any.
-        fn model(&self) -> Option<&str>;
-    }
-
-    /// Editable (key, display_value) pair surfaced by the picker UI.
-    #[derive(Debug, Clone)]
-    pub(crate) struct FieldEntry {
-        pub key: String,
-        pub value: String,
-    }
-
-    /// Per-provider adapter contract. The first three methods are the
-    /// minimal identity surface (existing inline code already provides
-    /// them); the rest are the migration target so a future PR can lift
-    /// `match Tool::X => { ... }` arms out of `tui.rs` one provider at
-    /// a time, see `kaku/src/ai_config/providers/`.
-    pub(crate) trait ProviderAdapter: Send + Sync {
-        // ── Identity ──────────────────────────────────────────────────
-        fn tool(&self) -> Tool;
-        fn label(&self) -> &'static str;
-        fn config_path(&self) -> PathBuf;
-
-        // ── Core lifecycle (each provider must implement) ────────────
-        /// Parse on-disk TOML/JSON into typed provider state.
-        fn load(&self, raw: &str) -> anyhow::Result<Box<dyn ProviderState>>;
-
-        /// Project state into editable (key, value) pairs for the UI.
-        fn extract_fields(&self, state: &dyn ProviderState) -> Vec<FieldEntry>;
-
-        /// Atomically persist a single edited field back to disk.
-        fn save_field(&self, key: &str, value: &str, path: &Path) -> anyhow::Result<()>;
-
-        // ── Optional capabilities (default: not supported) ───────────
-        /// Refresh model list from the provider's API. Returns None when
-        /// the provider does not support remote model listing.
-        fn refresh_models(&self, _state: &dyn ProviderState) -> Option<Vec<String>> {
-            None
-        }
-    }
-}
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Tool {
