@@ -44,3 +44,5 @@
 21	标签页和面板关闭确认现在支持 Never、Smart、Always 三种模式，显式 false 会立即关闭
 21	Kaku Dark now reports a dark terminal background to Hermes so response text stays readable
 21	Kaku Dark 现在会向 Hermes 正确报告深色终端背景，回复正文不再变成黑字
+22	Comment color stays readable in dark theme even when fast-syntax-highlighting or zsh-syntax-highlighting was loaded by your own .zshrc instead of Kaku
+22	即使你在 .zshrc 里自行加载了 fast-syntax-highlighting 或 zsh-syntax-highlighting，深色主题下 # 注释颜色也会保持可读

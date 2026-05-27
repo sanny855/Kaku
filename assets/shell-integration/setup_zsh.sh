@@ -1514,6 +1514,37 @@ function sudo {
     fi
 }
 fi
+
+# Kaku Dark maps ANSI 8 / bright_black to #3A3942, which makes any text rendered
+# at fg=8 (the default comment color in fast-syntax-highlighting and
+# zsh-syntax-highlighting) invisible. The deferred loader blocks above already
+# override the comment color when Kaku itself loaded the plugin, but they are
+# skipped when the user pre-loaded their own copy in .zshrc (oh-my-zsh, brew,
+# etc.). This one-shot precmd guard reapplies the override after .zshrc has
+# fully run, only when the comment style is still at an invisible default, so
+# users who picked their own color are preserved.
+_kaku_apply_highlight_styles() {
+    # Both fast-syntax-highlighting and zsh-syntax-highlighting ship the same
+    # invisible default for `[comment]`: fg=black,bold (older versions: fg=8).
+    # Kaku Dark's color_overrides collapse those to #3A3942 against #1F1D2C,
+    # so the # character and any zsh-style # comment becomes unreadable.
+    # Replace ONLY the known defaults; leave any other value alone so a user
+    # who picked their own comment color in .zshrc keeps it.
+    if (( \${+FAST_HIGHLIGHT_STYLES} )); then
+        case "\${FAST_HIGHLIGHT_STYLES[comment]:-}" in
+            ''|fg=8|fg=black|fg=black,bold|fg=8,bold|8|black)
+                FAST_HIGHLIGHT_STYLES[comment]='fg=244' ;;
+        esac
+    fi
+    if (( \${+ZSH_HIGHLIGHT_STYLES} )); then
+        case "\${ZSH_HIGHLIGHT_STYLES[comment]:-}" in
+            ''|fg=8|fg=black|fg=black,bold|fg=8,bold|8|black)
+                ZSH_HIGHLIGHT_STYLES[comment]='fg=244' ;;
+        esac
+    fi
+    precmd_functions=("\${precmd_functions[@]:#_kaku_apply_highlight_styles}")
+}
+precmd_functions+=(_kaku_apply_highlight_styles)
 EOF
 
 if [[ -s "$KAKU_INIT_TMPFILE" ]]; then
