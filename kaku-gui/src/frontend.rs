@@ -451,8 +451,22 @@ impl GuiFrontEnd {
                 }
                 MuxNotification::WindowWorkspaceChanged(_)
                 | MuxNotification::ActiveWorkspaceChanged(_)
-                | MuxNotification::WindowCreated(_)
-                | MuxNotification::WindowRemoved(_) => {
+                | MuxNotification::WindowCreated(_) => {
+                    crate::session_restore::mark_dirty();
+                    promise::spawn::spawn_into_main_thread(async move {
+                        let fe = crate::frontend::front_end();
+                        if !fe.is_switching_workspace() {
+                            fe.reconcile_workspace();
+                        }
+                    })
+                    .detach();
+                }
+                MuxNotification::WindowRemoved(window_id) => {
+                    // Window is gone from mux for real (Linux close / quit).
+                    // Drop any stale "logically closed" marker so it cannot
+                    // pollute a future save iteration.
+                    crate::session_restore::forget_logically_closed(window_id);
+                    crate::session_restore::mark_dirty();
                     promise::spawn::spawn_into_main_thread(async move {
                         let fe = crate::frontend::front_end();
                         if !fe.is_switching_workspace() {
@@ -472,23 +486,19 @@ impl GuiFrontEnd {
                 }
                 MuxNotification::TabTitleChanged { .. } => {}
                 MuxNotification::WindowTitleChanged { .. } => {}
-                MuxNotification::TabResized(tab_id) => {
-                    let mux = Mux::get();
-                    if let Some(window_id) = mux.window_containing_tab(tab_id) {
-                        crate::session_restore::request_save_window_snapshot(window_id);
-                    }
+                MuxNotification::TabResized(_) => {
+                    crate::session_restore::mark_dirty();
                 }
-                MuxNotification::TabAddedToWindow { window_id, .. } => {
-                    crate::session_restore::request_save_window_snapshot(window_id);
+                MuxNotification::TabAddedToWindow { .. } => {
+                    crate::session_restore::mark_dirty();
                 }
-                MuxNotification::PaneRemoved(_) => {}
+                MuxNotification::PaneRemoved(_) => {
+                    crate::session_restore::mark_dirty();
+                }
                 MuxNotification::WindowInvalidated(_) => {}
                 MuxNotification::PaneOutput(_) => {}
-                MuxNotification::PaneAdded(pane_id) => {
-                    let mux = Mux::get();
-                    if let Some((_, window_id, _)) = mux.resolve_pane_id(pane_id) {
-                        crate::session_restore::request_save_window_snapshot(window_id);
-                    }
+                MuxNotification::PaneAdded(_) => {
+                    crate::session_restore::mark_dirty();
                 }
                 MuxNotification::Alert {
                     pane_id,

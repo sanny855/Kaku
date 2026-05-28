@@ -1139,7 +1139,22 @@ impl TermWindow {
     }
 
     fn close_requested(&mut self, _window: &Window) {
-        let _ = crate::session_restore::save_window_snapshot(self.mux_window_id);
+        // AppKit sends `windowShouldClose:` to every NSWindow during Cmd+Q as
+        // well as for plain Cmd+W. `on_app_terminating` sets the global flag
+        // before those quit-time `windowShouldClose:` calls fan out, so this
+        // check reliably tells the two paths apart on macOS. Treating quit-
+        // time closes as "user closed a window" would push every live id into
+        // LOGICALLY_CLOSED_WINDOWS and starve the session save at main.rs:940.
+        #[cfg(target_os = "macos")]
+        let is_app_quitting = ::window::is_app_terminating();
+        #[cfg(not(target_os = "macos"))]
+        let is_app_quitting = false;
+
+        if !is_app_quitting {
+            let _ = crate::session_restore::save_closed_window_snapshot(self.mux_window_id);
+            crate::session_restore::mark_window_logically_closed(self.mux_window_id);
+            crate::session_restore::mark_dirty();
+        }
         #[cfg(target_os = "macos")]
         {
             // On macOS, hide the window instead of destroying it so that tabs,
@@ -4297,7 +4312,7 @@ impl TermWindow {
                 // No history: no-op, consistent with Chrome/Safari behavior
             }
             RestorePreviousWindow => {
-                crate::session_restore::restore_previous_window_from_menu();
+                crate::session_restore::restore_previous_window_from_menu(Some(self.mux_window_id));
             }
             Nop | DisableDefaultAssignment => {}
             ReloadConfiguration => {

@@ -9,23 +9,36 @@ use mux::Mux;
 use parking_lot::Mutex;
 use promise::spawn::spawn;
 use serde::{Deserialize, Serialize};
-use smol::Timer;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use wezterm_term::TerminalSize;
 use wezterm_toast_notification::persistent_toast_notification;
 use window::WindowOps;
 
-const SNAPSHOT_VERSION: u32 = 2;
-const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+const SNAPSHOT_VERSION: u32 = 3;
+
+// Envelope written on app quit: continue-where-you-left-off.
+#[derive(Debug, Serialize, Deserialize)]
+struct SavedSession {
+    version: u32,
+    windows: Vec<SavedWindowSnapshot>,
+}
+
+// Envelope written when the user closes a single window: undo-close-window.
+#[derive(Debug, Serialize, Deserialize)]
+struct SavedClosedWindow {
+    version: u32,
+    window: SavedWindowSnapshot,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SavedWindowSnapshot {
-    version: u32,
     active_tab_idx: usize,
     window_title: String,
+    #[serde(default)]
+    is_focused: bool,
     tabs: Vec<SavedTabSnapshot>,
 }
 
@@ -149,8 +162,12 @@ fn config_dir_file(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn snapshot_file() -> PathBuf {
-    config_dir_file("last_window_session.json")
+fn session_file() -> PathBuf {
+    config_dir_file("last_session.json")
+}
+
+fn closed_window_file() -> PathBuf {
+    config_dir_file("last_closed_window.json")
 }
 
 fn collect_leaf_entries(node: &SavedPaneNode, out: &mut Vec<SavedPaneEntry>) {
@@ -186,23 +203,100 @@ fn focused_window_id() -> Option<MuxWindowId> {
         })
 }
 
-fn build_snapshot_for_window(
-    window_id: MuxWindowId,
-) -> anyhow::Result<Option<SavedWindowSnapshot>> {
+// ---------- Pristine state + logically-closed window tracking ----------
+
+// Counts active RestoringGuards so concurrent / nested restores compose
+// correctly. mark_dirty is a no-op when depth > 0, and only the last guard's
+// drop clears MUX_DIRTY.
+static RESTORING_DEPTH: AtomicUsize = AtomicUsize::new(0);
+static MUX_DIRTY: AtomicBool = AtomicBool::new(false);
+
+fn logically_closed() -> &'static Mutex<HashSet<MuxWindowId>> {
+    static SET: std::sync::OnceLock<Mutex<HashSet<MuxWindowId>>> = std::sync::OnceLock::new();
+    SET.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub fn mark_dirty() {
+    if RESTORING_DEPTH.load(Ordering::Acquire) > 0 {
+        return;
+    }
+    MUX_DIRTY.store(true, Ordering::Release);
+}
+
+fn is_dirty() -> bool {
+    MUX_DIRTY.load(Ordering::Acquire)
+}
+
+pub fn mark_window_logically_closed(window_id: MuxWindowId) {
+    logically_closed().lock().insert(window_id);
+}
+
+pub fn forget_logically_closed(window_id: MuxWindowId) {
+    logically_closed().lock().remove(&window_id);
+}
+
+fn is_window_logically_closed(window_id: MuxWindowId) -> bool {
+    logically_closed().lock().contains(&window_id)
+}
+
+struct RestoringGuard;
+
+impl RestoringGuard {
+    fn new() -> Self {
+        RESTORING_DEPTH.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for RestoringGuard {
+    fn drop(&mut self) {
+        // Only the outermost guard clears MUX_DIRTY: nested / concurrent
+        // restores share the gate, and clearing on every drop would let one
+        // restore steal the pristine bit from another that is still running.
+        let prev = RESTORING_DEPTH.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            MUX_DIRTY.store(false, Ordering::Release);
+        }
+    }
+}
+
+// ---------- Triviality / emptiness ----------
+
+fn is_window_trivial(window_id: MuxWindowId) -> bool {
+    let mux = Mux::get();
+    let Some(window) = mux.get_window(window_id) else {
+        return true;
+    };
+    if window.len() != 1 {
+        return false;
+    }
+    let Some(tab) = window.get_by_idx(0) else {
+        return true;
+    };
+    let panes = tab.iter_panes_ignoring_zoom();
+    if panes.len() != 1 {
+        return false;
+    }
+    let dims = panes[0].pane.get_dimensions();
+    // RenderableDimensions::scrollback_rows is the total line count *including*
+    // the viewport, so `<= viewport_rows` means no history has scrolled off —
+    // i.e. the shell has emitted only its prompt.
+    dims.scrollback_rows <= dims.viewport_rows
+}
+
+fn is_window_empty(window_id: MuxWindowId) -> bool {
+    // For the menu-restore "replace current empty window" check we use the
+    // same definition as triviality: 1 tab + 1 pane + no scrollback.
+    is_window_trivial(window_id)
+}
+
+// ---------- Snapshot building ----------
+
+fn build_snapshot_for_window(window_id: MuxWindowId) -> anyhow::Result<SavedWindowSnapshot> {
     let mux = Mux::get();
     let window = mux
         .get_window(window_id)
         .ok_or_else(|| anyhow!("window {window_id} not found"))?;
-
-    let tab_count = window.len();
-    let pane_count: usize = window
-        .iter()
-        .map(|tab| tab.iter_panes_ignoring_zoom().len())
-        .sum();
-
-    if tab_count <= 1 && pane_count <= 1 {
-        return Ok(None);
-    }
 
     let tabs = window
         .iter()
@@ -214,24 +308,23 @@ fn build_snapshot_for_window(
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    Ok(Some(SavedWindowSnapshot {
-        version: SNAPSHOT_VERSION,
+    Ok(SavedWindowSnapshot {
         active_tab_idx: window.get_active_idx(),
         window_title: window.get_title().to_string(),
+        is_focused: focused_window_id() == Some(window_id),
         tabs,
-    }))
+    })
 }
 
-fn write_snapshot_to_path(
-    file_name: &std::path::Path,
-    snapshot: &SavedWindowSnapshot,
-) -> anyhow::Result<()> {
+// ---------- Atomic write helpers ----------
+
+fn write_json_atomic<T: Serialize>(file_name: &std::path::Path, value: &T) -> anyhow::Result<()> {
     if let Some(parent) = file_name.parent() {
         config::create_user_owned_dirs(parent)
             .with_context(|| format!("create snapshot dir {}", parent.display()))?;
     }
 
-    let encoded = serde_json::to_string_pretty(snapshot).context("encode window snapshot")?;
+    let encoded = serde_json::to_string_pretty(value).context("encode snapshot")?;
     // Atomic write: a crash mid-write would otherwise leave a truncated JSON
     // file that fails to parse on the next launch. Write to a sibling temp
     // file and rename on top, which is atomic on POSIX.
@@ -251,70 +344,75 @@ fn write_snapshot_to_path(
     Ok(())
 }
 
-fn write_snapshot(snapshot: &SavedWindowSnapshot) -> anyhow::Result<()> {
-    write_snapshot_to_path(&snapshot_file(), snapshot)
-}
+// ---------- Save entry points ----------
 
-pub fn save_window_snapshot(window_id: MuxWindowId) -> anyhow::Result<()> {
-    let Some(snapshot) = build_snapshot_for_window(window_id)? else {
+pub fn save_closed_window_snapshot(window_id: MuxWindowId) -> anyhow::Result<()> {
+    if is_window_trivial(window_id) {
         return Ok(());
+    }
+    let snapshot = build_snapshot_for_window(window_id)?;
+    let envelope = SavedClosedWindow {
+        version: SNAPSHOT_VERSION,
+        window: snapshot,
     };
-
-    write_snapshot(&snapshot)
+    write_json_atomic(&closed_window_file(), &envelope)
 }
 
-pub fn save_focused_window_snapshot() -> anyhow::Result<()> {
-    let Some(window_id) = focused_window_id() else {
+pub fn save_session_snapshot() -> anyhow::Result<()> {
+    if !is_dirty() {
         return Ok(());
-    };
+    }
 
-    save_window_snapshot(window_id)
-}
+    let mux = Mux::get();
+    let mut window_ids = mux.iter_windows();
+    window_ids.sort();
 
-fn debounce_state() -> &'static Mutex<HashMap<MuxWindowId, u64>> {
-    static STATE: OnceLock<Mutex<HashMap<MuxWindowId, u64>>> = OnceLock::new();
-    STATE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-pub fn request_save_window_snapshot(window_id: MuxWindowId) {
-    let generation = {
-        let mut map = debounce_state().lock();
-        let entry = map.entry(window_id).or_insert(0);
-        *entry = entry.wrapping_add(1);
-        *entry
-    };
-
-    spawn(async move {
-        Timer::after(SAVE_DEBOUNCE).await;
-        let latest = debounce_state()
-            .lock()
-            .get(&window_id)
-            .copied()
-            .unwrap_or(0);
-        if latest != generation {
-            return;
+    let mut windows = Vec::new();
+    for id in window_ids {
+        if is_window_logically_closed(id) {
+            continue;
         }
-        if let Err(err) = save_window_snapshot(window_id) {
-            log::debug!("failed to save window snapshot for {window_id}: {err:#}");
+        match build_snapshot_for_window(id) {
+            Ok(snap) => windows.push(snap),
+            Err(err) => log::debug!("skip window {id} for session snapshot: {err:#}"),
         }
-    })
-    .detach();
+    }
+
+    // Don't overwrite a useful saved session with a session that is entirely
+    // trivial (e.g. a single fresh shell prompt the user opened and closed).
+    if windows.is_empty() {
+        return Ok(());
+    }
+    let all_trivial = windows.iter().all(|w| {
+        w.tabs.len() <= 1
+            && matches!(
+                &w.tabs.first().map(|t| &t.pane_tree),
+                Some(SavedPaneNode::Leaf(_)) | None
+            )
+    });
+    if windows.len() == 1 && all_trivial {
+        // Single window with one tab containing one leaf pane and no extra
+        // structure — likely the startup empty window. Skip.
+        let mut leaves = Vec::new();
+        if let Some(t) = windows[0].tabs.first() {
+            collect_leaf_entries(&t.pane_tree, &mut leaves);
+        }
+        if leaves.len() <= 1 {
+            return Ok(());
+        }
+    }
+
+    let session = SavedSession {
+        version: SNAPSHOT_VERSION,
+        windows,
+    };
+    write_json_atomic(&session_file(), &session)
 }
 
-/// Reads the on-disk snapshot.
-///
-/// Returns `Ok(None)` when there is nothing usable to restore (no file, an
-/// older/newer version we don't recognize, a corrupt JSON, or an empty tab
-/// list). The menu treats this as a soft "nothing to restore" instead of
-/// surfacing a noisy error toast — version bumps would otherwise greet every
-/// upgrading user with a failure.
-///
-/// `Err` is reserved for unexpected I/O errors that the user should know
-/// about (e.g. permission denied).
-fn load_snapshot_from_path(
-    file_name: &std::path::Path,
-) -> anyhow::Result<Option<SavedWindowSnapshot>> {
-    let contents = match std::fs::read_to_string(&file_name) {
+// ---------- Load entry points ----------
+
+fn load_session_from_path(file_name: &std::path::Path) -> anyhow::Result<Option<SavedSession>> {
+    let contents = match std::fs::read_to_string(file_name) {
         Ok(s) => s,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
@@ -322,48 +420,97 @@ fn load_snapshot_from_path(
         }
     };
 
-    let snapshot: SavedWindowSnapshot = match serde_json::from_str(&contents) {
+    let session: SavedSession = match serde_json::from_str(&contents) {
         Ok(s) => s,
         Err(err) => {
             log::warn!(
-                "ignoring corrupt window snapshot at {}: {err}",
+                "ignoring corrupt session snapshot at {}: {err}",
                 file_name.display()
             );
             return Ok(None);
         }
     };
 
-    if snapshot.version != SNAPSHOT_VERSION {
+    if session.version != SNAPSHOT_VERSION {
         log::warn!(
-            "ignoring window snapshot at {} with unsupported version {} (expected {})",
+            "ignoring session snapshot at {} with unsupported version {} (expected {})",
             file_name.display(),
-            snapshot.version,
+            session.version,
             SNAPSHOT_VERSION
         );
         return Ok(None);
     }
 
-    if snapshot.tabs.is_empty() {
-        log::debug!("snapshot {} has no tabs", file_name.display());
+    if session.windows.is_empty() {
         return Ok(None);
     }
 
-    Ok(Some(snapshot))
+    Ok(Some(session))
 }
 
-fn load_snapshot() -> anyhow::Result<Option<SavedWindowSnapshot>> {
-    load_snapshot_from_path(&snapshot_file())
+fn load_session() -> anyhow::Result<Option<SavedSession>> {
+    load_session_from_path(&session_file())
 }
+
+fn load_closed_window_from_path(
+    file_name: &std::path::Path,
+) -> anyhow::Result<Option<SavedClosedWindow>> {
+    let contents = match std::fs::read_to_string(file_name) {
+        Ok(s) => s,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(anyhow::Error::new(err).context(format!("read {}", file_name.display())));
+        }
+    };
+
+    let closed: SavedClosedWindow = match serde_json::from_str(&contents) {
+        Ok(c) => c,
+        Err(err) => {
+            log::warn!(
+                "ignoring corrupt closed-window snapshot at {}: {err}",
+                file_name.display()
+            );
+            return Ok(None);
+        }
+    };
+
+    if closed.version != SNAPSHOT_VERSION {
+        log::warn!(
+            "ignoring closed-window snapshot at {} with unsupported version {} (expected {})",
+            file_name.display(),
+            closed.version,
+            SNAPSHOT_VERSION
+        );
+        return Ok(None);
+    }
+
+    Ok(Some(closed))
+}
+
+fn load_closed_window() -> anyhow::Result<Option<SavedClosedWindow>> {
+    load_closed_window_from_path(&closed_window_file())
+}
+
+fn delete_closed_window_file() {
+    let path = closed_window_file();
+    if let Err(err) = std::fs::remove_file(&path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            log::debug!("could not remove {}: {err:#}", path.display());
+        }
+    }
+}
+
+// ---------- Restore ----------
 
 async fn spawn_panes_for_tab(
     root: &SavedPaneNode,
-) -> anyhow::Result<HashMap<PaneId, Arc<dyn Pane>>> {
+) -> anyhow::Result<std::collections::HashMap<PaneId, Arc<dyn Pane>>> {
     let mux = Mux::get();
     let encoding = config::configuration().default_encoding;
     let mut entries = Vec::new();
     collect_leaf_entries(root, &mut entries);
 
-    let mut panes = HashMap::new();
+    let mut panes = std::collections::HashMap::new();
     for entry in entries {
         let domain = mux
             .get_domain_by_name(&entry.domain_name)
@@ -404,48 +551,95 @@ async fn get_existing_terminal_size() -> Option<TerminalSize> {
     rx.recv().await.ok()
 }
 
-async fn restore_snapshot(snapshot: SavedWindowSnapshot) -> anyhow::Result<()> {
+async fn build_tabs_into_window(
+    window_id: MuxWindowId,
+    tabs: Vec<SavedTabSnapshot>,
+    actual_size: Option<TerminalSize>,
+) -> anyhow::Result<()> {
     let mux = Mux::get();
-    let SavedWindowSnapshot {
-        version: _,
-        active_tab_idx,
-        window_title,
-        tabs,
-    } = snapshot;
-    let workspace = mux.active_workspace();
+    for saved_tab in tabs {
+        let size = saved_tab.pane_tree.root_size().unwrap_or_default();
+        let tab = Arc::new(Tab::new(&size));
+        let panes = spawn_panes_for_tab(&saved_tab.pane_tree).await?;
+        let pane_tree = saved_tab.pane_tree.into_pane_node();
 
-    let builder = mux.new_empty_window(Some(workspace), None::<GuiPosition>);
-    let window_id = *builder;
+        tab.try_sync_with_pane_tree(size, pane_tree, |entry| {
+            panes
+                .get(&entry.pane_id)
+                .cloned()
+                .ok_or_else(|| anyhow!("missing restored pane {}", entry.pane_id))
+        })?;
 
-    let actual_size = get_existing_terminal_size().await;
-
-    let restore_result = async {
-        for saved_tab in tabs {
-            let size = saved_tab.pane_tree.root_size().unwrap_or_default();
-            let tab = Arc::new(Tab::new(&size));
-            let panes = spawn_panes_for_tab(&saved_tab.pane_tree).await?;
-            let pane_tree = saved_tab.pane_tree.into_pane_node();
-
-            tab.try_sync_with_pane_tree(size, pane_tree, |entry| {
-                panes
-                    .get(&entry.pane_id)
-                    .cloned()
-                    .ok_or_else(|| anyhow!("missing restored pane {}", entry.pane_id))
-            })?;
-
-            if !saved_tab.title.is_empty() {
-                tab.set_title(&saved_tab.title);
-            }
-
-            mux.add_tab_no_panes(&tab);
-            mux.add_tab_to_window(&tab, window_id)?;
-
-            if let Some(s) = actual_size {
-                tab.resize(s);
-            }
+        if !saved_tab.title.is_empty() {
+            tab.set_title(&saved_tab.title);
         }
 
-        if let Some(mut window) = mux.get_window_mut(window_id) {
+        mux.add_tab_no_panes(&tab);
+        mux.add_tab_to_window(&tab, window_id)?;
+
+        if let Some(s) = actual_size {
+            tab.resize(s);
+        }
+    }
+    Ok(())
+}
+
+async fn restore_window(
+    snapshot: SavedWindowSnapshot,
+    current_window_id: Option<MuxWindowId>,
+) -> anyhow::Result<MuxWindowId> {
+    let mux = Mux::get();
+    let SavedWindowSnapshot {
+        active_tab_idx,
+        window_title,
+        is_focused: _,
+        tabs,
+    } = snapshot;
+    let actual_size = get_existing_terminal_size().await;
+
+    // The user pressed the menu inside `current_window_id`; that window is
+    // clearly live again even if it was previously closed and re-shown via
+    // the macOS Dock. Drop any stale "logically closed" marker before we
+    // decide replace-vs-newwindow so the next save sees consistent state.
+    if let Some(window_id) = current_window_id {
+        forget_logically_closed(window_id);
+        if is_window_empty(window_id) {
+            let existing_tab_ids: Vec<TabId> = match mux.get_window(window_id) {
+                Some(window) => window.iter().map(|t| t.tab_id()).collect(),
+                None => Vec::new(),
+            };
+
+            // Spawn new tabs first to avoid a tab-less window flash.
+            build_tabs_into_window(window_id, tabs, actual_size).await?;
+
+            // Now drop the originally-empty tabs.
+            for old in existing_tab_ids {
+                mux.remove_tab(old);
+            }
+
+            if let Some(mut window) = mux.get_window_mut(window_id) {
+                if !window_title.is_empty() {
+                    window.set_title(&window_title);
+                }
+                if window.len() > 0 {
+                    let max_idx = window.len() - 1;
+                    window.set_active_without_saving(active_tab_idx.min(max_idx));
+                }
+            }
+
+            return Ok(window_id);
+        }
+    }
+
+    // Otherwise create a new mux window.
+    let workspace = mux.active_workspace();
+    let builder = mux.new_empty_window(Some(workspace), None::<GuiPosition>);
+    let new_window_id = *builder;
+
+    let result = async {
+        build_tabs_into_window(new_window_id, tabs, actual_size).await?;
+
+        if let Some(mut window) = mux.get_window_mut(new_window_id) {
             if !window_title.is_empty() {
                 window.set_title(&window_title);
             }
@@ -454,15 +648,14 @@ async fn restore_snapshot(snapshot: SavedWindowSnapshot) -> anyhow::Result<()> {
                 window.set_active_without_saving(active_tab_idx.min(max_idx));
             }
         }
-
         Ok::<(), anyhow::Error>(())
     }
     .await;
 
-    match restore_result {
+    match result {
         Ok(()) => {
             drop(builder);
-            Ok(())
+            Ok(new_window_id)
         }
         Err(err) => {
             builder.cancel();
@@ -471,13 +664,58 @@ async fn restore_snapshot(snapshot: SavedWindowSnapshot) -> anyhow::Result<()> {
     }
 }
 
-#[allow(dead_code)]
-pub fn restore_previous_window_from_menu() {
+async fn restore_session(
+    session: SavedSession,
+    current_window_id: Option<MuxWindowId>,
+) -> anyhow::Result<()> {
+    let _guard = RestoringGuard::new();
+
+    let SavedSession {
+        version: _,
+        windows,
+    } = session;
+    if windows.is_empty() {
+        return Ok(());
+    }
+
+    let focused_idx = windows.iter().position(|w| w.is_focused).unwrap_or(0);
+
+    let mut new_window_ids: Vec<MuxWindowId> = Vec::with_capacity(windows.len());
+    for (idx, window_snap) in windows.into_iter().enumerate() {
+        let target = if idx == 0 { current_window_id } else { None };
+        match restore_window(window_snap, target).await {
+            Ok(id) => new_window_ids.push(id),
+            Err(err) => log::warn!("failed to restore one window from session: {err:#}"),
+        }
+    }
+
+    // Best-effort focus on the previously-focused window. The GUI TermWindow
+    // for a freshly-created mux window is spawned asynchronously, so the
+    // lookup may miss; that is acceptable — focus then stays on whichever
+    // window the platform picked.
+    if let Some(&target_id) = new_window_ids.get(focused_idx) {
+        if let Some(fe) = frontend::try_front_end() {
+            if let Some(gui) = fe.gui_window_for_mux_window(target_id) {
+                gui.window.focus();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn restore_previous_window_from_menu(current_window_id: Option<MuxWindowId>) {
     spawn(async move {
         let result = async {
-            match load_snapshot()? {
-                Some(snapshot) => {
-                    restore_snapshot(snapshot).await?;
+            match load_closed_window()? {
+                Some(closed) => {
+                    let _guard = RestoringGuard::new();
+                    restore_window(closed.window, current_window_id).await?;
+                    drop(_guard);
+                    // Consume the snapshot only on success: if restore failed
+                    // (e.g. domain unavailable), keep the file so the user can
+                    // retry after fixing the underlying issue.
+                    delete_closed_window_file();
                     Ok::<bool, anyhow::Error>(true)
                 }
                 None => Ok(false),
@@ -490,7 +728,7 @@ pub fn restore_previous_window_from_menu() {
             Ok(false) => {
                 persistent_toast_notification(
                     "Restore Previous Window",
-                    "No previous window snapshot is available to restore.",
+                    "No previously-closed window is available to restore.",
                 );
             }
             Err(err) => {
@@ -503,9 +741,18 @@ pub fn restore_previous_window_from_menu() {
 }
 
 pub async fn try_restore_on_startup() -> anyhow::Result<bool> {
-    match load_snapshot()? {
-        Some(snapshot) => {
-            restore_snapshot(snapshot).await?;
+    match load_session()? {
+        Some(session) => {
+            // macOS's applicationOpenUntitledFile can dispatch a SpawnWindow
+            // before this runs, leaving a pristine empty mux window in place.
+            // Reuse it as the target for the first restored window so the user
+            // does not end up with one phantom empty window plus the restored
+            // ones.
+            let preexisting_empty = Mux::get()
+                .iter_windows()
+                .into_iter()
+                .find(|id| is_window_empty(*id));
+            restore_session(session, preexisting_empty).await?;
             Ok(true)
         }
         None => Ok(false),
@@ -516,11 +763,11 @@ pub async fn try_restore_on_startup() -> anyhow::Result<bool> {
 mod tests {
     use super::*;
 
-    fn sample_snapshot(version: u32) -> SavedWindowSnapshot {
+    fn sample_window(title: &str) -> SavedWindowSnapshot {
         SavedWindowSnapshot {
-            version,
             active_tab_idx: 0,
-            window_title: "Test Window".to_string(),
+            window_title: title.to_string(),
+            is_focused: false,
             tabs: vec![SavedTabSnapshot {
                 title: "Test Tab".to_string(),
                 pane_tree: SavedPaneNode::Empty,
@@ -528,39 +775,138 @@ mod tests {
         }
     }
 
-    #[test]
-    fn snapshot_round_trips_via_atomic_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("last_window_session.json");
-        write_snapshot_to_path(&path, &sample_snapshot(SNAPSHOT_VERSION)).unwrap();
+    fn sample_session(version: u32) -> SavedSession {
+        SavedSession {
+            version,
+            windows: vec![sample_window("Test Window")],
+        }
+    }
 
-        let loaded = load_snapshot_from_path(&path).unwrap().expect("snapshot");
+    fn sample_closed(version: u32) -> SavedClosedWindow {
+        SavedClosedWindow {
+            version,
+            window: sample_window("Test Window"),
+        }
+    }
+
+    #[test]
+    fn session_round_trips_via_atomic_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("last_session.json");
+        write_json_atomic(&path, &sample_session(SNAPSHOT_VERSION)).unwrap();
+
+        let loaded = load_session_from_path(&path).unwrap().expect("session");
         assert_eq!(loaded.version, SNAPSHOT_VERSION);
-        assert_eq!(loaded.active_tab_idx, 0);
-        assert_eq!(loaded.window_title, "Test Window");
-        assert_eq!(loaded.tabs.len(), 1);
-        assert_eq!(loaded.tabs[0].title, "Test Tab");
+        assert_eq!(loaded.windows.len(), 1);
+        assert_eq!(loaded.windows[0].window_title, "Test Window");
     }
 
     #[test]
-    fn corrupt_snapshot_is_ignored() {
+    fn closed_window_round_trips() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("last_window_session.json");
+        let path = dir.path().join("last_closed_window.json");
+        write_json_atomic(&path, &sample_closed(SNAPSHOT_VERSION)).unwrap();
+
+        let loaded = load_closed_window_from_path(&path)
+            .unwrap()
+            .expect("closed window");
+        assert_eq!(loaded.version, SNAPSHOT_VERSION);
+        assert_eq!(loaded.window.window_title, "Test Window");
+    }
+
+    #[test]
+    fn corrupt_session_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("last_session.json");
         std::fs::write(&path, "{not json").unwrap();
-
-        assert!(load_snapshot_from_path(&path).unwrap().is_none());
+        assert!(load_session_from_path(&path).unwrap().is_none());
     }
 
     #[test]
-    fn unsupported_snapshot_version_is_ignored() {
+    fn unsupported_session_version_is_ignored() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("last_window_session.json");
+        let path = dir.path().join("last_session.json");
         std::fs::write(
             &path,
-            serde_json::to_string(&sample_snapshot(SNAPSHOT_VERSION + 1)).unwrap(),
+            serde_json::to_string(&sample_session(SNAPSHOT_VERSION + 1)).unwrap(),
         )
         .unwrap();
+        assert!(load_session_from_path(&path).unwrap().is_none());
+    }
 
-        assert!(load_snapshot_from_path(&path).unwrap().is_none());
+    #[test]
+    fn v2_snapshot_is_ignored() {
+        // Pre-v3 single-window envelope: must be silently ignored on upgrade.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("last_session.json");
+        std::fs::write(
+            &path,
+            r#"{"version":2,"active_tab_idx":0,"window_title":"x","tabs":[]}"#,
+        )
+        .unwrap();
+        assert!(load_session_from_path(&path).unwrap().is_none());
+    }
+
+    // Shared by every test that touches MUX_DIRTY / RESTORING_DEPTH so they
+    // serialize against cargo's parallel test runner.
+    static DIRTY_TEST_GATE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    #[test]
+    fn pristine_state_machine() {
+        let _g = DIRTY_TEST_GATE.lock();
+
+        MUX_DIRTY.store(false, Ordering::Release);
+        RESTORING_DEPTH.store(0, Ordering::Release);
+        assert!(!is_dirty());
+
+        // mark_dirty outside a restore should flip the bit.
+        mark_dirty();
+        assert!(is_dirty());
+
+        // Inside RestoringGuard, mark_dirty is a no-op (the previously-set
+        // bit remains), and dropping the outermost guard forces dirty back
+        // to false.
+        {
+            let _guard = RestoringGuard::new();
+            mark_dirty();
+            assert!(MUX_DIRTY.load(Ordering::Acquire));
+        }
+        assert!(!is_dirty());
+    }
+
+    #[test]
+    fn nested_restoring_guards_compose() {
+        let _g = DIRTY_TEST_GATE.lock();
+
+        MUX_DIRTY.store(false, Ordering::Release);
+        RESTORING_DEPTH.store(0, Ordering::Release);
+
+        let outer = RestoringGuard::new();
+        {
+            let _inner = RestoringGuard::new();
+            // Both guards are active: depth == 2.
+            assert_eq!(RESTORING_DEPTH.load(Ordering::Acquire), 2);
+        }
+        // Inner dropped; depth == 1 and MUX_DIRTY still untouched.
+        assert_eq!(RESTORING_DEPTH.load(Ordering::Acquire), 1);
+        // Even if something marks dirty here, it must be ignored — depth > 0.
+        mark_dirty();
+        assert!(!is_dirty());
+        drop(outer);
+        // Outer dropped; depth == 0 and dirty cleared by the outer drop.
+        assert_eq!(RESTORING_DEPTH.load(Ordering::Acquire), 0);
+        assert!(!is_dirty());
+    }
+
+    #[test]
+    fn logically_closed_set_round_trips() {
+        // Use a high id unlikely to collide with concurrent test windows.
+        let id: MuxWindowId = 999_999;
+        forget_logically_closed(id);
+        assert!(!is_window_logically_closed(id));
+        mark_window_logically_closed(id);
+        assert!(is_window_logically_closed(id));
+        forget_logically_closed(id);
+        assert!(!is_window_logically_closed(id));
     }
 }

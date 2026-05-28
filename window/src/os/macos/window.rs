@@ -56,6 +56,15 @@ use wezterm_font::FontConfiguration;
 use wezterm_input_types::{is_ascii_control, IntegratedTitleButtonStyle, KeyboardLedStatus};
 
 static APP_TERMINATING: AtomicBool = AtomicBool::new(false);
+
+/// True once `on_app_terminating` has been entered. AppKit sets this before
+/// it sends `windowShouldClose:` to individual NSWindows during quit, so the
+/// GUI layer can distinguish "user pressed Cmd+Q" from "user closed a single
+/// window" inside its close-requested callback.
+pub fn is_app_terminating() -> bool {
+    APP_TERMINATING.load(Ordering::Relaxed)
+}
+
 // Cached opacity state, updated on config change. Avoids a Mutex lock
 // on every compositor call to isOpaque (60-120Hz on ProMotion displays).
 static VIEW_IS_OPAQUE: AtomicBool = AtomicBool::new(true);
