@@ -2060,6 +2060,19 @@ impl Config {
                 "0"
             },
         );
+
+        // Recompute COLORFGBG from the final resolved palette so any user
+        // overrides to color_scheme are reflected in spawned child processes.
+        if let Some(bg) = self.resolved_palette.background.as_ref() {
+            cmd.env(
+                "COLORFGBG",
+                if crate::color::is_light_color(bg) {
+                    "0;15"
+                } else {
+                    "15;0"
+                },
+            );
+        }
     }
 }
 
@@ -2617,6 +2630,37 @@ mod tests {
             cmd.get_env(super::KAKU_TAB_ACCEPT_SUGGEST_FIRST),
             Some(std::ffi::OsStr::new("1"))
         );
+    }
+
+    #[test]
+    fn colorfgbg_matches_final_resolved_palette() {
+        // (background rgb, expected COLORFGBG, stale value pre-seeded via
+        // set_environment_variables that the palette must override — mirrors
+        // the bundled kaku.lua line that hard-codes COLORFGBG from the scheme
+        // name and may disagree with the final resolved background.)
+        let cases = [
+            ((232, 240, 232), "0;15", "15;0"),
+            ((21, 20, 27), "15;0", "0;15"),
+        ];
+
+        for (background, expected, stale_override) in cases {
+            let mut config = super::Config::default();
+            config.resolved_palette.background = Some(background.into());
+            config
+                .set_environment_variables
+                .insert("COLORFGBG".to_string(), stale_override.into());
+
+            let mut cmd = portable_pty::CommandBuilder::new_default_prog();
+            cmd.env_remove("COLORFGBG");
+            config.apply_cmd_defaults(&mut cmd, None, None);
+
+            assert_eq!(
+                cmd.get_env("COLORFGBG"),
+                Some(std::ffi::OsStr::new(expected)),
+                "COLORFGBG should be derived from the final resolved palette, \
+                 overriding any value set via set_environment_variables"
+            );
+        }
     }
 }
 
