@@ -1022,8 +1022,9 @@ mod tests {
 
         assert!(
             content.contains("config.tab_close_confirmation = 'SmartPrompt'")
-                && content.contains("config.pane_close_confirmation = 'SmartPrompt'"),
-            "bundled kaku.lua should default tab and pane close confirmation to SmartPrompt"
+                && content.contains("config.pane_close_confirmation = 'SmartPrompt'")
+                && content.contains("config.window_close_confirmation = 'SmartPrompt'"),
+            "bundled kaku.lua should default tab, pane, and window close confirmation to SmartPrompt"
         );
     }
 

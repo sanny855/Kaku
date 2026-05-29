@@ -42,6 +42,8 @@
 20	kaku init 现在会跳过只读配置路径，并在加载内置 zsh-z 前保留已有目录跳转工具
 21	Tab and pane close confirmation now support Never, Smart, and Always modes; explicit false closes immediately
 21	标签页和面板关闭确认现在支持 Never、Smart、Always 三种模式，显式 false 会立即关闭
+21	Cmd+Q now smart-confirms by default: Kaku quits instantly when every pane sits at a shell prompt, and asks first when an agent or editor is still running
+21	Cmd+Q 现在默认智能确认：所有面板都在 shell 提示符时直接退出，仍有 agent 或编辑器在运行时会先询问
 21	Kaku Dark now reports a dark terminal background to Hermes so response text stays readable
 21	Kaku Dark 现在会向 Hermes 正确报告深色终端背景，回复正文不再变成黑字
 22	Comment color stays readable in dark theme even when fast-syntax-highlighting or zsh-syntax-highlighting was loaded by your own .zshrc instead of Kaku

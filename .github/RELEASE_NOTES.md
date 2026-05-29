@@ -17,7 +17,7 @@
 7. **Window Polish**: Hollow cursor on the unfocused active pane, non-fancy tab bar top inset and cell height, and a stale "Restart to Update" menu item are all cleaned up.
 8. **Font Scaling**: Prompt redraws are skipped while the font scale is settling, and PTY resizes flush only after the cell dimensions stabilize.
 9. **`kaku chat` Overlay**: Every invocation reliably retriggers the AI chat overlay, even when the user-var value would otherwise be deduped.
-10. **Tidy**: Simplified Chinese localization is removed (the `language` option is still accepted as a deprecated field), `smart_tab_mode` and an opt-in `SmartPrompt` close-confirmation mode are added, dependencies are audit-clean, and new CI gates cover logs, clippy, and prompt metadata.
+10. **Tidy**: Simplified Chinese localization is removed (the `language` option is still accepted as a deprecated field), `smart_tab_mode` is added and Cmd+Q now defaults to `SmartPrompt` (quits instantly when every pane is at a shell prompt, asks first when an agent or editor is still running), dependencies are audit-clean, and new CI gates cover logs, clippy, and prompt metadata.
 
 ### 更新日志
 
@@ -30,6 +30,6 @@
 7. **窗口细节**：非聚焦活动 pane 的空心光标、非 fancy 标签栏的顶部内距与 cell 高度、菜单里残留的"重启更新"项都做了收敛。
 8. **字体缩放**：缩放未稳定前跳过 prompt 重绘，PTY 大小调整在 cell 维度稳定后才一次性下发。
 9. **`kaku chat` 浮层**：每次调用都能稳定触发 AI 聊天浮层，不再被 UserVar 去重机制吞掉。
-10. **轻装**：简体中文本地化整体移除（`language` 字段仍作为 deprecated 字段保留兼容），新增 `smart_tab_mode` 与可选的 `SmartPrompt` 关闭确认模式，依赖 audit clean，新增日志、clippy、提示元数据三道 CI 门禁。
+10. **轻装**：简体中文本地化整体移除（`language` 字段仍作为 deprecated 字段保留兼容），新增 `smart_tab_mode`，Cmd+Q 默认改为 `SmartPrompt`（所有面板都在 shell 提示符时直接退出，仍有 agent 或编辑器在运行时先询问），依赖 audit clean，新增日志、clippy、提示元数据三道 CI 门禁。
 
 > https://github.com/tw93/Kaku
