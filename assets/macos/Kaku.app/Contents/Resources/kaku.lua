@@ -3289,7 +3289,7 @@ wezterm.on('format-tab-title', function(tab, tabs, panes, effective_config, hove
   if active_pane and active_pane.is_zoomed then
     text = text .. ' [Z]'
   end
-  
+
   -- Handle config.show_tab_index_in_tab_bar
   if effective_config.show_tab_index_in_tab_bar then
     local tab_index = effective_config.tab_and_split_indices_are_zero_based and tab.tab_index or (tab.tab_index + 1)
