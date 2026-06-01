@@ -1270,7 +1270,7 @@ if ! (( \${+functions[_zsh_highlight]} )) && [[ -f "\$KAKU_ZSH_DIR/plugins/fast-
 
         # Override comment color: fsh default (fg=8) is invisible on dark backgrounds.
         typeset -gA FAST_HIGHLIGHT_STYLES
-        FAST_HIGHLIGHT_STYLES[comment]='fg=244'
+        FAST_HIGHLIGHT_STYLES[comment]='fg=249'
 
         # Remove this hook after first run
         precmd_functions=("\${precmd_functions[@]:#fast_syntax_highlighting_defer}")
@@ -1533,13 +1533,13 @@ _kaku_apply_highlight_styles() {
     if (( \${+FAST_HIGHLIGHT_STYLES} )); then
         case "\${FAST_HIGHLIGHT_STYLES[comment]:-}" in
             ''|fg=8|fg=black|fg=black,bold|fg=8,bold|8|black)
-                FAST_HIGHLIGHT_STYLES[comment]='fg=244' ;;
+                FAST_HIGHLIGHT_STYLES[comment]='fg=249' ;;
         esac
     fi
     if (( \${+ZSH_HIGHLIGHT_STYLES} )); then
         case "\${ZSH_HIGHLIGHT_STYLES[comment]:-}" in
             ''|fg=8|fg=black|fg=black,bold|fg=8,bold|8|black)
-                ZSH_HIGHLIGHT_STYLES[comment]='fg=244' ;;
+                ZSH_HIGHLIGHT_STYLES[comment]='fg=249' ;;
         esac
     fi
     precmd_functions=("\${precmd_functions[@]:#_kaku_apply_highlight_styles}")
@@ -1823,7 +1823,7 @@ if [[ -f "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.
     zsh_syntax_highlighting_defer() {
         source "$KAKU_ZSH_DIR/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
         # Override comment color: default (fg=8) is invisible on dark backgrounds.
-        ZSH_HIGHLIGHT_STYLES[comment]='fg=244'
+        ZSH_HIGHLIGHT_STYLES[comment]='fg=249'
         # Remove this hook after first run
         precmd_functions=("${precmd_functions[@]:#zsh_syntax_highlighting_defer}")
     }

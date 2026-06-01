@@ -52,4 +52,11 @@ fi
 [[ -f "$tmp_home/.config/kaku/zsh/kaku.zsh" ]] || fail "kaku.zsh was not generated"
 [[ -f "$tmp_home/.zshrc" ]] || fail ".zshrc was not patched"
 
+if ! grep -Fq "fg=249" "$tmp_home/.config/kaku/zsh/kaku.zsh"; then
+  fail "generated kaku.zsh did not set readable comment color fg=249"
+fi
+if grep -Fq "fg=244" "$tmp_home/.config/kaku/zsh/kaku.zsh"; then
+  fail "generated kaku.zsh still contains old comment color fg=244"
+fi
+
 echo "setup_zsh update-only smoke test passed"
