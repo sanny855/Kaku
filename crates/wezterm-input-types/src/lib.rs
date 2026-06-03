@@ -1287,6 +1287,9 @@ pub struct MouseEvent {
     pub screen_coords: crate::ScreenPoint,
     pub mouse_buttons: MouseButtons,
     pub modifiers: Modifiers,
+    /// Platform-native click count (e.g. NSEvent clickCount on macOS).
+    /// 0 means the platform did not provide one.
+    pub platform_click_count: u8,
 }
 
 #[derive(Debug, Clone)]

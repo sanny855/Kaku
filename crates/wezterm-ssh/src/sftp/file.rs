@@ -155,7 +155,12 @@ impl smol::io::AsyncRead for File {
         }
         let tx = match self.tx.as_ref() {
             Some(tx) => tx.clone(),
-            None => return Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "file is closed"))),
+            None => {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "file is closed",
+                )))
+            }
         };
         let file_id = self.file_id;
 
@@ -197,7 +202,12 @@ impl smol::io::AsyncWrite for File {
 
         let tx = match self.tx.as_ref() {
             Some(tx) => tx.clone(),
-            None => return Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "file is closed"))),
+            None => {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "file is closed",
+                )))
+            }
         };
         let file_id = self.file_id;
 
@@ -221,7 +231,12 @@ impl smol::io::AsyncWrite for File {
 
         let tx = match self.tx.as_ref() {
             Some(tx) => tx.clone(),
-            None => return Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "file is closed"))),
+            None => {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "file is closed",
+                )))
+            }
         };
         let file_id = self.file_id;
 

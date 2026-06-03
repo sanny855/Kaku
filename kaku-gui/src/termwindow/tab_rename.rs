@@ -311,6 +311,8 @@ impl TabRenameModal {
         if let Some(tab) = Mux::get().get_tab(self.tab_id) {
             tab.set_title(self.value.borrow().as_str());
         }
+        // Sync rebuild so hit-test regions match the new width before paint (#443).
+        term_window.update_title_impl();
         term_window.cancel_modal();
     }
 

@@ -67,13 +67,10 @@ fn mouse_dispatch_target(
     }
 }
 
-fn should_zoom_title_area(
-    window_decorations: window::WindowDecorations,
-    click_streak: Option<usize>,
-) -> bool {
+fn should_zoom_title_area(window_decorations: window::WindowDecorations, click_count: u8) -> bool {
     window_decorations
         == (window::WindowDecorations::INTEGRATED_BUTTONS | window::WindowDecorations::RESIZE)
-        && click_streak == Some(2)
+        && click_count == 2
 }
 
 fn tab_bar_item_starts_window_drag(item: TabBarItem) -> bool {
@@ -804,8 +801,9 @@ impl super::TermWindow {
                     WMEK::Press(MousePress::Left) => {
                         let fullscreen = self.window_state.contains(WindowState::FULL_SCREEN);
                         let maximized = self.window_state.contains(WindowState::MAXIMIZED);
-                        // Double-click title area to zoom window
-                        if self.last_mouse_click.as_ref().map(|c| c.streak) == Some(2) {
+                        // Use platform click count to avoid the manual streak counter
+                        // false-positiving on title-bar single clicks (#414).
+                        if event.platform_click_count == 2 {
                             if let Some(ref window) = self.window {
                                 match title_area_double_click_zoom_action(self.window_state) {
                                     TitleAreaZoomAction::Maximize => window.maximize(),
@@ -1105,7 +1103,7 @@ impl super::TermWindow {
 
                 match item {
                     TabBarItem::Tab { tab_idx, active } => {
-                        if self.last_mouse_click.as_ref().map(|c| c.streak) == Some(2) {
+                        if event.platform_click_count == 2 {
                             self.tab_drag_state = None;
                             if let Err(err) = self.begin_tab_rename(tab_idx, ui_item) {
                                 log::debug!("begin_tab_rename({tab_idx}) failed: {err:#}");
@@ -1131,7 +1129,7 @@ impl super::TermWindow {
                         if let Some(ref window) = self.window {
                             if should_zoom_title_area(
                                 self.config.window_decorations,
-                                self.last_mouse_click.as_ref().map(|c| c.streak),
+                                event.platform_click_count,
                             ) {
                                 match title_area_double_click_zoom_action(self.window_state) {
                                     TitleAreaZoomAction::Maximize => window.maximize(),
@@ -1974,11 +1972,11 @@ mod tests {
     fn title_area_double_click_zooms_instead_of_dragging() {
         assert!(should_zoom_title_area(
             WindowDecorations::INTEGRATED_BUTTONS | WindowDecorations::RESIZE,
-            Some(2),
+            2,
         ));
         assert!(!should_zoom_title_area(
             WindowDecorations::INTEGRATED_BUTTONS | WindowDecorations::RESIZE,
-            Some(1),
+            1,
         ));
     }
 

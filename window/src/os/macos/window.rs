@@ -1431,9 +1431,7 @@ impl WindowOps for Window {
             // as a stranded black overlay. Exit the Space first; the hide is
             // completed from did_exit_fullscreen once AppKit tears it down.
             if inner.is_native_fullscreen() {
-                if let Some(window_view) =
-                    unsafe { WindowView::get_this(&**inner.view) }
-                {
+                if let Some(window_view) = unsafe { WindowView::get_this(&**inner.view) } {
                     window_view.order_out_on_fullscreen_exit.set(true);
                 }
                 inner.exit_native_fullscreen();
@@ -4396,12 +4394,14 @@ impl WindowView {
             modifiers = key_modifiers(nsevent.modifierFlags());
             screen_coords = NSEvent::mouseLocation(nsevent);
         }
+        let platform_click_count = unsafe { nsevent.clickCount() }.min(255) as u8;
         let event = MouseEvent {
             kind,
             coords: Point::new(coords.x as isize, coords.y as isize),
             screen_coords: cartesian_to_screen_point(screen_coords),
             mouse_buttons,
             modifiers,
+            platform_click_count,
         };
 
         if let Some(myself) = Self::get_this(this) {
