@@ -464,8 +464,12 @@ update_homebrew_tap() {
         local sleep_seconds="${HOMEBREW_TAP_VERIFY_SLEEP_SECONDS:-15}"
         while (( attempt < max_attempts )); do
             attempt=$((attempt + 1))
-            remote_version=$(gh api "repos/${HOMEBREW_TAP_REPO}/contents/Casks/kakuku.rb?ref=main" --jq '.download_url' 2>/dev/null \
-                | xargs -I{} curl -fsSL --max-time 10 {} 2>/dev/null \
+            # Read the cask via the API's raw content, not its download_url:
+            # download_url points at raw.githubusercontent.com behind Fastly
+            # (cache-control max-age=300), which serves the previous version for
+            # the whole polling window and causes false-negative timeouts.
+            remote_version=$(gh api "repos/${HOMEBREW_TAP_REPO}/contents/Casks/kakuku.rb?ref=main" \
+                -H "Accept: application/vnd.github.raw" 2>/dev/null \
                 | sed -n 's/^  version "\([^"]*\)"$/\1/p' | head -n1 || true)
             if [[ "$remote_version" == "$expected_version" ]]; then
                 log_info "Homebrew tap verified at version ${remote_version}"
