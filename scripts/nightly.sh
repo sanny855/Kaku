@@ -1,15 +1,29 @@
 #!/usr/bin/env bash
-# nightly.sh - Build a debug app bundle and publish it as a GitHub prerelease.
+# nightly.sh - Build a release-grade, notarized preview and publish it as the
+# rolling "nightly" GitHub prerelease.
+#
+# This produces the same artifact quality a normal user expects from a stable
+# release (Developer ID signed, notarized, stapled, drag-to-Applications DMG),
+# so anyone can download it to test fixes that have landed on main but are not
+# yet in a tagged version.
+#
+# It deliberately does NOT do what scripts/release.sh does: no version bump, no
+# V* tag, no Homebrew tap dispatch, no RELEASE_NOTES.md. The version in the app
+# stays whatever Cargo.toml currently says.
 #
 # Usage:
-#   ./scripts/nightly.sh                     # build + upload
-#   ./scripts/nightly.sh --upload-only       # skip build, re-upload existing dist/Kaku.app
-#   ./scripts/nightly.sh --features=remote   # enable optional cargo features
+#   ./scripts/nightly.sh                     # build + notarize + publish
+#   ./scripts/nightly.sh --upload-only       # skip build/notarize; re-publish existing dist/Kaku.dmg
+#   ./scripts/nightly.sh --features=remote    # enable optional cargo features
 #
-# Published as a prerelease under the fixed tag "nightly"; each run clobbers
-# the previous artifact. Concurrent runs are blocked via a PID lock file.
+# Requirements (same credentials as scripts/release.sh):
+#   - Developer ID Application certificate in Keychain (or KAKU_SIGNING_IDENTITY)
+#   - Notarization creds: rcodesign ASC API key or notarytool Keychain profile
+#   - gh CLI authenticated (gh auth login)
 #
-# Requirements: gh CLI authenticated (gh auth login)
+# Environment overrides:
+#   PROFILE      release-opt (default, matches stable) or release (faster build)
+#   NIGHTLY_TAG  rolling release tag (default: nightly)
 
 set -euo pipefail
 
@@ -18,9 +32,11 @@ cd "$REPO_ROOT"
 
 GITHUB_REPO="${GITHUB_REPO:-tw93/Kaku}"
 NIGHTLY_TAG="${NIGHTLY_TAG:-nightly}"
+PROFILE="${PROFILE:-release-opt}"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/dist}"
-ZIP_NAME="Kaku-nightly.zip"
-ZIP_PATH="$OUT_DIR/$ZIP_NAME"
+DMG_PATH="$OUT_DIR/Kaku.dmg"
+DMG_ASSET_NAME="Kaku-nightly.dmg"
+DMG_ASSET_PATH="$OUT_DIR/$DMG_ASSET_NAME"
 UPLOAD_ONLY=0
 FEATURES=""
 
@@ -28,91 +44,137 @@ for arg in "$@"; do
     case "$arg" in
         --upload-only) UPLOAD_ONLY=1 ;;
         --features=*) FEATURES="${arg#--features=}" ;;
+        *) echo "Unknown argument: $arg" >&2; exit 1 ;;
     esac
 done
 
-# Concurrency guard: only one nightly build at a time per checkout.
-mkdir -p "$OUT_DIR"
-LOCK="$OUT_DIR/.nightly.lock"
-if ! (set -o noclobber; echo $$ > "$LOCK") 2>/dev/null; then
-    echo "nightly.sh already running (PID $(cat "$LOCK" 2>/dev/null)); remove $LOCK if stale" >&2
-    exit 1
-fi
-trap 'rm -f "$LOCK"' EXIT
+case "$PROFILE" in
+    release | release-opt) ;;
+    *) echo "PROFILE must be release or release-opt for a notarizable nightly, got: $PROFILE" >&2; exit 1 ;;
+esac
 
 # Colors
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 log() { echo -e "${GREEN}[nightly]${NC} $*"; }
-warn() { echo -e "${YELLOW}[nightly]${NC} $*"; }
+die() { echo -e "${YELLOW}[nightly]${NC} $*" >&2; exit 1; }
 
-# Build
+# Concurrency guard: only one nightly build at a time per checkout.
+mkdir -p "$OUT_DIR"
+LOCK="$OUT_DIR/.nightly.lock"
+if ! (set -o noclobber; echo $$ > "$LOCK") 2>/dev/null; then
+    die "nightly.sh already running (PID $(cat "$LOCK" 2>/dev/null)); remove $LOCK if stale"
+fi
+trap 'rm -f "$LOCK"' EXIT
+
+# --- Pre-flight (fail before a multi-minute build) ---------------------------
+
+if ! command -v gh >/dev/null 2>&1; then
+    die "gh CLI not found. Install from https://cli.github.com/"
+fi
+if ! gh auth status >/dev/null 2>&1; then
+    die "gh CLI not authenticated. Run: gh auth login"
+fi
+
+# Tie the nightly tag to the exact commit being built; this also fails loudly
+# below if that commit has not been pushed to origin yet.
+FULL_SHA=$(git rev-parse HEAD)
+SHORT_SHA=$(git rev-parse --short HEAD)
+
 if [[ "$UPLOAD_ONLY" -eq 0 ]]; then
-    log "Building debug app bundle..."
+    # Notarization needs either an rcodesign ASC API key or a notarytool profile.
+    # Mirror release.sh's lookup so we don't build for minutes then fail at notary.
+    have_creds=0
+    asc_key="${KAKU_ASC_API_KEY_PATH:-}"
+    [[ -z "$asc_key" ]] && asc_key=$(security find-generic-password -s "kaku-asc-api-key-path" -w 2>/dev/null || true)
+    if [[ -n "$asc_key" && -f "$asc_key" ]] && command -v rcodesign >/dev/null 2>&1; then
+        have_creds=1
+    fi
+    notary_profile="${KAKU_NOTARYTOOL_PROFILE:-}"
+    [[ -z "$notary_profile" ]] && notary_profile=$(security find-generic-password -s "kaku-notarytool-profile" -w 2>/dev/null || true)
+    [[ -n "$notary_profile" ]] && have_creds=1
+    if [[ "$have_creds" -eq 0 ]]; then
+        die "No notarization credentials found (rcodesign ASC API key or notarytool profile). See scripts/notarize.sh for setup."
+    fi
+fi
+
+# --- Build (Developer ID signed, universal, with DMG) -----------------------
+
+if [[ "$UPLOAD_ONLY" -eq 0 ]]; then
+    log "Building $PROFILE universal bundle (Developer ID signed)..."
     # Filter the noisy ranlib warning, but preserve build.sh's exit code via
     # PIPESTATUS — `| grep ... || true` would mask any build failure.
     set +e
-    PROFILE=debug BUILD_ARCH=universal CARGO_FEATURES="$FEATURES" ./scripts/build.sh --app-only 2>&1 \
-        | grep -v 'ranlib: warning:.*has no symbols'
+    PROFILE="$PROFILE" BUILD_ARCH=universal OUT_DIR="$OUT_DIR" \
+        KAKU_REQUIRE_SIGNED_RELEASE=1 CARGO_FEATURES="$FEATURES" \
+        ./scripts/build.sh 2>&1 | grep -v 'ranlib: warning:.*has no symbols'
     BUILD_STATUS=${PIPESTATUS[0]}
     set -e
-    if [[ "$BUILD_STATUS" -ne 0 ]]; then
-        echo "build.sh failed with exit code $BUILD_STATUS" >&2
-        exit "$BUILD_STATUS"
-    fi
-    log "Build complete: $OUT_DIR/Kaku.app"
+    [[ "$BUILD_STATUS" -ne 0 ]] && die "build.sh failed with exit code $BUILD_STATUS"
+    log "Build complete: $OUT_DIR/Kaku.app + $DMG_PATH"
+
+    log "Notarizing and stapling..."
+    OUT_DIR="$OUT_DIR" ./scripts/notarize.sh
 fi
 
-# Zip
-log "Packaging $ZIP_NAME..."
-rm -f "$ZIP_PATH"
-cd "$OUT_DIR"
-zip -qr "$ZIP_NAME" Kaku.app
-cd "$REPO_ROOT"
-SIZE=$(du -sh "$ZIP_PATH" | cut -f1)
-log "Package ready: $ZIP_PATH ($SIZE)"
+[[ -f "$DMG_PATH" ]] || die "$DMG_PATH not found. Run without --upload-only to build it."
 
-# Draft release
-if ! command -v gh >/dev/null 2>&1; then
-    echo "gh CLI not found. Install from https://cli.github.com/" >&2
-    exit 1
-fi
-if ! gh auth status >/dev/null 2>&1; then
-    echo "gh CLI not authenticated. Run: gh auth login" >&2
-    exit 1
-fi
+# Rename for download clarity; cp preserves the stapled notarization ticket.
+cp -f "$DMG_PATH" "$DMG_ASSET_PATH"
+SIZE=$(du -sh "$DMG_ASSET_PATH" | cut -f1)
+log "Asset ready: $DMG_ASSET_PATH ($SIZE)"
 
-SHORT_SHA=$(git rev-parse --short HEAD)
+# --- Release notes (commits since the last stable tag) ----------------------
+
+LAST_STABLE=$(git tag -l 'V*' --sort=-v:refname | head -n1 || true)
 TIMESTAMP=$(date -u "+%Y-%m-%d %H:%M UTC")
-BODY="Debug build for testing. Commit: \`$SHORT_SHA\` ($TIMESTAMP)
+CARGO_VERSION=$(grep '^version =' "$REPO_ROOT/kaku/Cargo.toml" | head -n1 | cut -d'"' -f2)
 
-**Install:** Download and unzip, then drag \`Kaku.app\` to \`/Applications\`.
-> Ad-hoc signed (debug build). macOS may require: System Settings → Privacy & Security → Open Anyway."
+NOTES_FILE=$(mktemp /tmp/kaku-nightly-notes.XXXXXX.md)
+trap 'rm -f "$LOCK" "$NOTES_FILE"' EXIT
+{
+    echo "Preview build from \`main\` at \`$SHORT_SHA\` ($TIMESTAMP)."
+    echo "Notarized and signed: download, open the DMG, drag Kaku to Applications."
+    echo ""
+    if [[ -n "$LAST_STABLE" ]]; then
+        echo "### Changes since $LAST_STABLE"
+        echo ""
+        # Skip merge commits and CI's auto-format commits; keep it readable.
+        git log "$LAST_STABLE..HEAD" --no-merges --pretty='- %s' \
+            | grep -v '^- style: auto format$' || echo "- (no new commits since $LAST_STABLE)"
+    else
+        echo "### Recent changes"
+        echo ""
+        git log -20 --no-merges --pretty='- %s'
+    fi
+    echo ""
+    echo "> Based on Kaku v$CARGO_VERSION. This is a preview and may be unstable; for the stable build see the latest tagged release."
+} > "$NOTES_FILE"
+
+# --- Publish (recreate so the release date refreshes and it sorts to the top) ---
+
+# Confirm the built commit is on the remote before deleting the old release, so
+# a not-yet-pushed HEAD can never leave nightly with no release at all.
+if ! gh api "repos/$GITHUB_REPO/commits/$FULL_SHA" >/dev/null 2>&1; then
+    die "Commit $SHORT_SHA is not on $GITHUB_REPO yet. Push main before publishing the nightly."
+fi
 
 if gh release view "$NIGHTLY_TAG" -R "$GITHUB_REPO" >/dev/null 2>&1; then
-    log "Updating existing nightly release '$NIGHTLY_TAG'..."
-    gh release edit "$NIGHTLY_TAG" \
-        -R "$GITHUB_REPO" \
-        --prerelease \
-        --draft=false \
-        --title "Nightly ($SHORT_SHA)" \
-        --notes "$BODY"
-    gh release upload "$NIGHTLY_TAG" \
-        -R "$GITHUB_REPO" \
-        "$ZIP_PATH" \
-        --clobber
-else
-    log "Creating nightly release '$NIGHTLY_TAG'..."
-    gh release create "$NIGHTLY_TAG" \
-        -R "$GITHUB_REPO" \
-        "$ZIP_PATH" \
-        --prerelease \
-        --title "Nightly ($SHORT_SHA)" \
-        --notes "$BODY"
+    log "Removing previous '$NIGHTLY_TAG' release so the new one sorts to the top..."
+    gh release delete "$NIGHTLY_TAG" -R "$GITHUB_REPO" --yes --cleanup-tag
 fi
 
-DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$NIGHTLY_TAG/$ZIP_NAME"
+log "Publishing nightly at $SHORT_SHA..."
+gh release create "$NIGHTLY_TAG" \
+    -R "$GITHUB_REPO" \
+    --target "$FULL_SHA" \
+    --prerelease \
+    --title "Nightly $(date -u '+%Y-%m-%d') ($SHORT_SHA)" \
+    --notes-file "$NOTES_FILE" \
+    "$DMG_ASSET_PATH"
+
+DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$NIGHTLY_TAG/$DMG_ASSET_NAME"
 log "Done."
 echo ""
 echo "  Download: $DOWNLOAD_URL"
