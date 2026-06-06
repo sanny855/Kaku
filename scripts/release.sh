@@ -160,7 +160,7 @@ detect_signing_identity() {
     identities=$(security find-identity -v -p codesigning 2>/dev/null | grep "Developer ID Application" | awk -F '"' '{print $2}' || true)
 
     local count
-    count=$(echo "$identities" | grep -c "^Developer ID Application" || echo "0")
+    count=$(echo "$identities" | grep -c "^Developer ID Application" || true)
 
     if [[ "$count" -eq 0 ]]; then
         die "No Developer ID Application certificate found in Keychain.\n" \
