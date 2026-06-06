@@ -125,32 +125,64 @@ cp -f "$DMG_PATH" "$DMG_ASSET_PATH"
 SIZE=$(du -sh "$DMG_ASSET_PATH" | cut -f1)
 log "Asset ready: $DMG_ASSET_PATH ($SIZE)"
 
-# --- Release notes (commits since the last stable tag) ----------------------
+# --- Release notes (official frame + auto changelog since last stable) -------
+# Matches the visual frame of a tagged release (.github/RELEASE_NOTES.md): logo
+# header, tagline, "### Changelog", footer link. The changelog itself is derived
+# from commits since the last stable tag — a nightly cannot carry the hand-
+# written bilingual prose of a curated release, so it stays English-only and is
+# clearly framed as a preview rather than faking a curated 更新日志.
 
 LAST_STABLE=$(git tag -l 'V*' --sort=-v:refname | head -n1 || true)
-TIMESTAMP=$(date -u "+%Y-%m-%d %H:%M UTC")
+BUILD_DATE=$(date -u "+%Y-%m-%d")
 CARGO_VERSION=$(grep '^version =' "$REPO_ROOT/kaku/Cargo.toml" | head -n1 | cut -d'"' -f2)
+
+if [[ -n "$LAST_STABLE" ]]; then
+    LOG_RANGE="$LAST_STABLE..HEAD"
+    SINCE_LABEL="$LAST_STABLE"
+else
+    LOG_RANGE="HEAD~20..HEAD"
+    SINCE_LABEL="recent work"
+fi
+
+# Clean raw commit subjects toward the curated changelog look: drop non-user-
+# facing prefixes, strip the conventional-commit type/scope, move leading issue
+# refs to the end, and capitalize the first letter.
+CHANGELOG=$(git log "$LOG_RANGE" --no-merges --pretty='%s' \
+    | grep -vE '^(docs|chore|ci|build|test|style)(\([^)]*\))?!?: ' \
+    | awk '
+        {
+            line = $0
+            sub(/^[a-z]+(\([^)]*\))?!?: /, "", line)
+            if (match(line, /^#[0-9]+([ ,]+#[0-9]+)*[ ]+/)) {
+                refs = substr(line, 1, RLENGTH)
+                rest = substr(line, RLENGTH + 1)
+                gsub(/[ ]+$/, "", refs)
+                gsub(/[ ]+/, ", ", refs)
+                line = rest " (" refs ")"
+            }
+            line = toupper(substr(line, 1, 1)) substr(line, 2)
+            printf "%d. %s\n", ++n, line
+        }
+    ')
+[[ -z "$CHANGELOG" ]] && CHANGELOG="1. Maintenance and internal changes since ${SINCE_LABEL}."
 
 NOTES_FILE=$(mktemp /tmp/kaku-nightly-notes.XXXXXX.md)
 trap 'rm -f "$LOCK" "$NOTES_FILE"' EXIT
-{
-    echo "Preview build from \`main\` at \`$SHORT_SHA\` ($TIMESTAMP)."
-    echo "Notarized and signed: download, open the DMG, drag Kaku to Applications."
-    echo ""
-    if [[ -n "$LAST_STABLE" ]]; then
-        echo "### Changes since $LAST_STABLE"
-        echo ""
-        # Skip merge commits and CI's auto-format commits; keep it readable.
-        git log "$LAST_STABLE..HEAD" --no-merges --pretty='- %s' \
-            | grep -v '^- style: auto format$' || echo "- (no new commits since $LAST_STABLE)"
-    else
-        echo "### Recent changes"
-        echo ""
-        git log -20 --no-merges --pretty='- %s'
-    fi
-    echo ""
-    echo "> Based on Kaku v$CARGO_VERSION. This is a preview and may be unstable; for the stable build see the latest tagged release."
-} > "$NOTES_FILE"
+cat > "$NOTES_FILE" <<EOF
+<div align="center">
+  <img src="https://raw.githubusercontent.com/tw93/Kaku/main/assets/logo.png" alt="Kaku Logo" width="120" height="120" />
+  <h1 style="margin: 12px 0 6px;">Kaku Nightly</h1>
+  <p><em>A fast, out-of-the-box terminal built for AI coding.</em></p>
+</div>
+
+> Preview build from \`main\` at \`$SHORT_SHA\`, $BUILD_DATE, based on v$CARGO_VERSION. Notarized: open the DMG and drag Kaku to Applications. It may be unstable; for the stable build use the latest tagged release.
+
+### Changelog
+
+$CHANGELOG
+
+> https://github.com/tw93/Kaku
+EOF
 
 # --- Publish (recreate so the release date refreshes and it sorts to the top) ---
 
