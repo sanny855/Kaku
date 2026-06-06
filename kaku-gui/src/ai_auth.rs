@@ -180,6 +180,7 @@ const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_OAUTH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 
 /// Codex OAuth credentials read from ~/.codex/auth.json.
+#[derive(Clone)]
 pub struct CodexAuth {
     pub access_token: String,
     /// ChatGPT account id, sent as the `chatgpt-account-id` header on the Codex
@@ -225,6 +226,10 @@ fn codex_account_id_from(v: &serde_json::Value) -> Option<String> {
         .and_then(|t| t.get("id_token"))
         .or_else(|| v.get("id_token"))
         .and_then(|t| t.as_str())?;
+    codex_account_id_from_id_token(id_token)
+}
+
+fn codex_account_id_from_id_token(id_token: &str) -> Option<String> {
     let claims = decode_jwt_claims(id_token)?;
     claims
         .get("chatgpt_account_id")
@@ -267,20 +272,97 @@ pub fn read_codex_access_token() -> Option<String> {
     read_codex_auth().map(|a| a.access_token)
 }
 
-/// Exchanges the refresh_token in ~/.codex/auth.json for a fresh access token.
-///
-/// Used when the on-disk access token has expired (the responses backend returns
-/// 401). Refreshes in-memory only; Codex CLI owns auth.json and rewrites it on
-/// its own refresh, so Kaku does not persist here to avoid clobbering that file.
-pub fn refresh_codex_access_token(client: &reqwest::blocking::Client) -> Result<String> {
-    let v = read_codex_auth_json().ok_or_else(|| anyhow::anyhow!("Codex: auth.json missing"))?;
-    let refresh_token = v
-        .get("tokens")
+fn codex_refresh_token_from(v: &serde_json::Value) -> Option<&str> {
+    v.get("tokens")
         .and_then(|t| t.get("refresh_token"))
         .or_else(|| v.get("refresh_token"))
         .and_then(|t| t.as_str())
         .filter(|t| !t.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("Codex: no refresh_token; run `codex` to re-login"))?;
+}
+
+fn json_string_field(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(|t| t.as_str())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(String::from)
+}
+
+fn set_codex_auth_token_field(
+    auth: &mut serde_json::Value,
+    key: &str,
+    value: String,
+) -> Result<()> {
+    let root = auth
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Codex auth.json must be a JSON object"))?;
+
+    if root.contains_key("tokens") {
+        if !root.get("tokens").is_some_and(serde_json::Value::is_object) {
+            root.insert("tokens".to_string(), serde_json::json!({}));
+        }
+        let tokens = root
+            .get_mut("tokens")
+            .and_then(|tokens| tokens.as_object_mut())
+            .ok_or_else(|| anyhow::anyhow!("Codex auth.json tokens must be a JSON object"))?;
+        tokens.insert(key.to_string(), serde_json::Value::String(value));
+    } else {
+        root.insert(key.to_string(), serde_json::Value::String(value));
+    }
+
+    Ok(())
+}
+
+fn merge_codex_refresh_response(
+    mut auth_json: serde_json::Value,
+    refresh: &serde_json::Value,
+) -> Result<(serde_json::Value, CodexAuth)> {
+    let access_token = json_string_field(refresh, "access_token")
+        .ok_or_else(|| anyhow::anyhow!("Codex refresh response missing access_token"))?;
+
+    set_codex_auth_token_field(&mut auth_json, "access_token", access_token.clone())?;
+    for key in ["refresh_token", "id_token"] {
+        if let Some(value) = json_string_field(refresh, key) {
+            set_codex_auth_token_field(&mut auth_json, key, value)?;
+        }
+    }
+
+    let refreshed_account_id = json_string_field(refresh, "account_id").or_else(|| {
+        json_string_field(refresh, "id_token")
+            .and_then(|id_token| codex_account_id_from_id_token(&id_token))
+    });
+    if let Some(account_id) = refreshed_account_id {
+        set_codex_auth_token_field(&mut auth_json, "account_id", account_id)?;
+    }
+
+    auth_json
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Codex auth.json must be a JSON object"))?
+        .insert(
+            "last_refresh".to_string(),
+            serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+        );
+
+    let account_id = codex_account_id_from(&auth_json);
+    Ok((
+        auth_json,
+        CodexAuth {
+            access_token,
+            account_id,
+        },
+    ))
+}
+
+/// Exchanges the refresh_token in ~/.codex/auth.json for fresh Codex OAuth
+/// credentials, then preserves Codex's auth file shape while updating the
+/// returned token fields. This keeps the official login cache in sync when
+/// refresh tokens rotate.
+pub fn refresh_codex_auth(client: &reqwest::blocking::Client) -> Result<CodexAuth> {
+    let original =
+        read_codex_auth_json().ok_or_else(|| anyhow::anyhow!("Codex: auth.json missing"))?;
+    let refresh_token = codex_refresh_token_from(&original)
+        .ok_or_else(|| anyhow::anyhow!("Codex: no refresh_token; run `codex` to re-login"))?
+        .to_string();
 
     let resp = client
         .post(CODEX_OAUTH_TOKEN_URL)
@@ -288,7 +370,7 @@ pub fn refresh_codex_access_token(client: &reqwest::blocking::Client) -> Result<
         .header("User-Agent", "codex_cli_rs")
         .form(&[
             ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
+            ("refresh_token", refresh_token.as_str()),
             ("client_id", CODEX_CLIENT_ID),
             ("scope", "openid profile email"),
         ])
@@ -302,11 +384,22 @@ pub fn refresh_codex_access_token(client: &reqwest::blocking::Client) -> Result<
     }
 
     let data: serde_json::Value = resp.json().context("parse Codex refresh response")?;
-    data["access_token"]
-        .as_str()
-        .filter(|t| !t.is_empty())
-        .map(String::from)
-        .ok_or_else(|| anyhow::anyhow!("Codex refresh response missing access_token"))
+    let current = read_codex_auth_json().unwrap_or(original);
+    let (updated, auth) = merge_codex_refresh_response(current, &data)?;
+    let path = codex_auth_file_path();
+    let json = serde_json::to_vec_pretty(&updated).context("serialize Codex auth")?;
+    if let Err(e) =
+        write_secret_file(&path, &json).with_context(|| format!("write {}", path.display()))
+    {
+        log::warn!("Failed to persist refreshed Codex token: {e}");
+    }
+    Ok(auth)
+}
+
+/// Backward-compatible accessor for just the refreshed access token.
+#[allow(dead_code)]
+pub fn refresh_codex_access_token(client: &reqwest::blocking::Client) -> Result<String> {
+    refresh_codex_auth(client).map(|auth| auth.access_token)
 }
 
 /// Returns true when the Codex CLI auth file exists and has a token.
@@ -394,5 +487,71 @@ mod tests {
         assert_eq!(codex_account_id_from(&v), None);
         let no_token = serde_json::json!({ "tokens": { "access_token": "t" } });
         assert_eq!(codex_account_id_from(&no_token), None);
+    }
+
+    #[test]
+    fn codex_refresh_merge_preserves_nested_auth_and_rotates_refresh() {
+        let id_token = fake_jwt(serde_json::json!({
+            "https://api.openai.com/auth": { "chatgpt_account_id": "acc-new" }
+        }));
+        let existing = serde_json::json!({
+            "OPENAI_API_KEY": "keep-api-key",
+            "auth_mode": "chatgpt",
+            "last_refresh": "old",
+            "tokens": {
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+                "id_token": "old-id-token",
+                "account_id": "acc-old",
+                "custom_token_field": "keep-token"
+            },
+            "custom_root_field": true
+        });
+        let refresh = serde_json::json!({
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "id_token": id_token
+        });
+
+        let (updated, auth) = merge_codex_refresh_response(existing, &refresh).unwrap();
+
+        assert_eq!(auth.access_token, "new-access");
+        assert_eq!(auth.account_id.as_deref(), Some("acc-new"));
+        assert_eq!(updated["OPENAI_API_KEY"], "keep-api-key");
+        assert_eq!(updated["auth_mode"], "chatgpt");
+        assert_eq!(updated["custom_root_field"], true);
+        assert_eq!(updated["tokens"]["access_token"], "new-access");
+        assert_eq!(updated["tokens"]["refresh_token"], "new-refresh");
+        assert_eq!(updated["tokens"]["account_id"], "acc-new");
+        assert_eq!(updated["tokens"]["custom_token_field"], "keep-token");
+        assert_ne!(updated["last_refresh"], "old");
+        assert!(updated["last_refresh"].as_str().unwrap().contains('T'));
+    }
+
+    #[test]
+    fn codex_refresh_merge_preserves_flat_auth_shape() {
+        let existing = serde_json::json!({
+            "access_token": "old-access",
+            "refresh_token": "old-refresh",
+            "custom_root_field": "keep"
+        });
+        let refresh = serde_json::json!({ "access_token": "new-access" });
+
+        let (updated, auth) = merge_codex_refresh_response(existing, &refresh).unwrap();
+
+        assert_eq!(auth.access_token, "new-access");
+        assert_eq!(updated["access_token"], "new-access");
+        assert_eq!(updated["refresh_token"], "old-refresh");
+        assert_eq!(updated["custom_root_field"], "keep");
+        assert!(updated.get("tokens").is_none());
+        assert!(updated["last_refresh"].as_str().unwrap().contains('T'));
+    }
+
+    #[test]
+    fn codex_refresh_merge_requires_access_token() {
+        let existing = serde_json::json!({ "tokens": { "refresh_token": "old-refresh" } });
+        let refresh = serde_json::json!({ "refresh_token": "new-refresh" });
+
+        assert!(merge_codex_refresh_response(existing, &refresh).is_err());
     }
 }

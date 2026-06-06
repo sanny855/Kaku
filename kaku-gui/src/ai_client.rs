@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::ai_auth;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -339,6 +339,7 @@ pub struct ToolCall {
 pub struct AiClient {
     config: AssistantConfig,
     client: reqwest::blocking::Client,
+    codex_auth: Arc<Mutex<Option<ai_auth::CodexAuth>>>,
 }
 
 /// Build a blocking reqwest client that respects the user's system proxy.
@@ -390,7 +391,34 @@ impl AiClient {
         Self {
             config,
             client: shared_http_client().clone(),
+            codex_auth: Arc::new(Mutex::new(None)),
         }
+    }
+
+    fn codex_auth(&self) -> Result<ai_auth::CodexAuth> {
+        if let Some(auth) = self
+            .codex_auth
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Codex auth cache poisoned"))?
+            .clone()
+        {
+            return Ok(auth);
+        }
+
+        let auth = ai_auth::read_codex_auth().ok_or_else(|| {
+            anyhow::anyhow!("Codex: not logged in. Run `codex` to authenticate, then retry.")
+        })?;
+        self.store_codex_auth(auth.clone())?;
+        Ok(auth)
+    }
+
+    fn store_codex_auth(&self, auth: ai_auth::CodexAuth) -> Result<()> {
+        let mut cache = self
+            .codex_auth
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Codex auth cache poisoned"))?;
+        *cache = Some(auth);
+        Ok(())
     }
 
     /// Whether this client will include tools in chat requests.
@@ -665,9 +693,7 @@ impl AiClient {
     ) -> Result<Vec<ToolCall>> {
         use serde_json::{json, Value};
 
-        let auth = ai_auth::read_codex_auth().ok_or_else(|| {
-            anyhow::anyhow!("Codex: not logged in. Run `codex` to authenticate, then retry.")
-        })?;
+        let mut auth = self.codex_auth()?;
 
         // Translate chat messages -> Responses `input`. System text becomes
         // `instructions`; assistant tool-call turns and tool results become
@@ -776,13 +802,13 @@ impl AiClient {
             body["tool_choice"] = Value::String("auto".to_string());
         }
 
-        let build = |token: &str| -> reqwest::blocking::RequestBuilder {
+        let build = |auth: &ai_auth::CodexAuth| -> reqwest::blocking::RequestBuilder {
             let mut req = self
                 .client
                 .post(CODEX_RESPONSES_URL)
                 .header("Content-Type", "application/json")
                 .header("Accept", "text/event-stream")
-                .header("Authorization", format!("Bearer {token}"))
+                .header("Authorization", format!("Bearer {}", auth.access_token))
                 .header("OpenAI-Beta", "responses=experimental")
                 .header("originator", "codex_cli_rs")
                 .header("User-Agent", "codex_cli_rs")
@@ -793,14 +819,13 @@ impl AiClient {
             req
         };
 
-        // Use the on-disk token; on 401 (expired) refresh once and retry.
-        let mut response = build(&auth.access_token)
-            .send()
-            .context("Codex responses request")?;
+        // Use the cached token; on 401 (expired) refresh once, persist it, then retry.
+        let mut response = build(&auth).send().context("Codex responses request")?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             log::debug!("Codex access token rejected (401); refreshing");
-            let fresh = ai_auth::refresh_codex_access_token(&self.client)?;
-            response = build(&fresh).send().context("Codex responses retry")?;
+            auth = ai_auth::refresh_codex_auth(&self.client)?;
+            self.store_codex_auth(auth.clone())?;
+            response = build(&auth).send().context("Codex responses retry")?;
         }
         if !response.status().is_success() {
             let status = response.status();
