@@ -127,6 +127,27 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Shell script lint (shellcheck)
+        run: |
+          set -euo pipefail
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            brew install shellcheck
+          fi
+          # Lint the bundled bash integration scripts. kaku.sh is zsh and
+          # state_common.sh is a sourced fragment, so scope to files with a bash
+          # shebang (shellcheck cannot parse zsh). --severity=error catches the
+          # recurring class such as SC2168 (`local` outside a function, #432/#441)
+          # without failing on style nits.
+          status=0
+          for f in assets/shell-integration/*.sh; do
+            if head -1 "$f" | grep -qE '^#!/(bin/bash|usr/bin/env bash)'; then
+              echo "::group::shellcheck ${f}"
+              shellcheck --severity=error "$f" || status=1
+              echo "::endgroup::"
+            fi
+          done
+          exit "$status"
+
   check:
     name: Cargo Check
     runs-on: macos-latest

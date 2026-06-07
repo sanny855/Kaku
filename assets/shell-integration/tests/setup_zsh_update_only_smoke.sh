@@ -59,4 +59,17 @@ if grep -Fq "fg=244" "$tmp_home/.config/kaku/zsh/kaku.zsh"; then
   fail "generated kaku.zsh still contains old comment color fg=244"
 fi
 
+# The generated file is sourced by the user's real zsh, so it must parse under
+# zsh. A corrupted heredoc (e.g. an unescaped backtick that bash expanded at
+# generation time, #450) or a stray top-level construct surfaces here even when
+# setup_zsh.sh itself exited 0.
+if command -v zsh >/dev/null 2>&1; then
+  if ! zsh -n "$tmp_home/.config/kaku/zsh/kaku.zsh" 2>"$tmp_dir/zsh_parse.log"; then
+    cat "$tmp_dir/zsh_parse.log" >&2
+    fail "generated kaku.zsh failed 'zsh -n' parse check"
+  fi
+else
+  echo "warning: zsh not found; skipping kaku.zsh parse check" >&2
+fi
+
 echo "setup_zsh update-only smoke test passed"
