@@ -163,15 +163,15 @@ Kaku's Smart Tab overrides the Tab key in zsh to provide smarter completion beha
 
 | Mode | Behavior | Environment Variable |
 | :--- | :--- | :--- |
-| Completion First (default) | Tab shows the completion list; use `->` to accept autosuggestions | - |
-| Suggestion First | Tab accepts autosuggestions when available, falls back to completion | `KAKU_TAB_ACCEPT_SUGGEST_FIRST=1` |
+| Completion First | Tab shows the completion list; use `->` to accept autosuggestions | - |
+| Suggestion First (default) | Tab accepts autosuggestions when available, falls back to completion | `KAKU_TAB_ACCEPT_SUGGEST_FIRST=1` |
 | Off | Disables Smart Tab entirely, restoring native zsh Tab behavior | `KAKU_SMART_TAB_DISABLE=1` |
 
 You can also set the mode via `kaku config` (the **Smart Tab** option under Behavior) or in `kaku.lua`:
 
 ```lua
-config.smart_tab_mode = "completion_first"   -- default
-config.smart_tab_mode = "suggestion_first"   -- Tab accepts autosuggestions first
+config.smart_tab_mode = "suggestion_first"   -- default; Tab accepts autosuggestions first
+config.smart_tab_mode = "completion_first"   -- Tab shows the completion list instead
 config.smart_tab_mode = "off"                -- disable Smart Tab
 ```
 

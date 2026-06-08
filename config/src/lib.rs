@@ -1029,6 +1029,18 @@ mod tests {
     }
 
     #[test]
+    fn bundled_kaku_lua_defaults_smart_tab_to_suggestion_first() {
+        let bundled = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../assets/macos/Kaku.app/Contents/Resources/kaku.lua");
+        let content = std::fs::read_to_string(&bundled).expect("read bundled kaku.lua");
+
+        assert!(
+            content.contains("config.smart_tab_mode = 'suggestion_first'"),
+            "bundled kaku.lua should default Smart Tab to suggestion-first"
+        );
+    }
+
+    #[test]
     fn bundled_kaku_lua_enables_minimum_text_contrast() {
         let bundled = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../assets/macos/Kaku.app/Contents/Resources/kaku.lua");

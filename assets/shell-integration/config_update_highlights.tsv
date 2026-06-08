@@ -48,3 +48,5 @@
 21	Kaku Dark 现在会向 Hermes 正确报告深色终端背景，回复正文不再变成黑字
 22	Comment color stays readable in dark theme even when fast-syntax-highlighting or zsh-syntax-highlighting was loaded by your own .zshrc instead of Kaku
 22	即使你在 .zshrc 里自行加载了 fast-syntax-highlighting 或 zsh-syntax-highlighting，深色主题下 # 注释颜色也会保持可读
+23	Tab now accepts the grey autosuggestion by default when one is shown, and still falls back to completion otherwise; set smart_tab_mode = 'completion_first' to keep the old completion-first behavior
+23	Tab 现在默认接受灰色自动建议：有建议时按 Tab 直接采纳，没有时仍回退到补全；想保留旧的补全优先行为可设 smart_tab_mode = 'completion_first'

@@ -46,7 +46,7 @@ The AI config TUI lives in the `kaku` CLI crate and shares terminal UI primitive
 - Do not reintroduce `KAKU_CONFIG_FILE`; config path override was intentionally removed.
 - Keep bundled fallback config authoritative at `assets/macos/Kaku.app/Contents/Resources/kaku.lua`.
 - Preserve compatibility with runtime reload callers that trigger `config::reload()` from GUI-side signals.
-- Treat `config_version` 20 as the current release baseline. Any version bump must update bundled config, release checks, docs, and migration expectations together.
+- Treat `config_version` 23 as the current release baseline. Any version bump must update bundled config, release checks, docs, and migration expectations together.
 - New config fields are user-facing behavior. Keep them out of pure cleanup/refactor patches unless the maintainer explicitly approved the product change, and update bundled defaults plus documentation in the same change when they do land.
 - Keep alternate-screen wheel scroll behavior configurable; terminal and GUI defaults must not diverge.
 

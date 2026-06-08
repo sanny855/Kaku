@@ -457,7 +457,7 @@ impl App {
                 key: "Smart Tab",
                 lua_key: "smart_tab_mode",
                 value: String::new(),
-                default: "Completion First".into(),
+                default: "Suggestion First".into(),
                 options: vec!["Completion First", "Suggestion First", "Off"],
                 skip_write: false,
             },
@@ -1359,9 +1359,9 @@ impl App {
                     &field.value
                 };
                 match effective.as_str() {
-                    "Suggestion First" => "'suggestion_first'".into(),
+                    "Completion First" => "'completion_first'".into(),
                     "Off" => "'off'".into(),
-                    _ => "'completion_first'".into(),
+                    _ => "'suggestion_first'".into(),
                 }
             }
             "macos_global_hotkey" => {
@@ -1492,6 +1492,9 @@ mod tests {
             .position(|f| f.lua_key == "smart_tab_mode")
             .expect("smart_tab_mode field to exist");
 
+        assert_eq!(app.to_lua_value(&app.fields[idx]), "'suggestion_first'");
+
+        app.fields[idx].value = "Completion First".to_string();
         assert_eq!(app.to_lua_value(&app.fields[idx]), "'completion_first'");
 
         app.fields[idx].value = "Suggestion First".to_string();

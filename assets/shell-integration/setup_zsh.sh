@@ -1218,9 +1218,10 @@ unset -f _kaku_has_autosuggest_system 2>/dev/null
 
 # Smart Tab behavior:
 # - Use completion while typing arguments/path-like tokens
-# - For the first command token, prefer completion by default so Tab reveals
-#   candidates instead of always accepting recent-history suggestions
-# - Set KAKU_TAB_ACCEPT_SUGGEST_FIRST=1 to restore suggestion-first behavior
+# - When Kaku sets KAKU_TAB_ACCEPT_SUGGEST_FIRST=1, accept a visible
+#   autosuggestion before falling back to completion
+# - Without KAKU_TAB_ACCEPT_SUGGEST_FIRST, prefer completion so Tab reveals
+#   candidates instead of accepting recent-history suggestions
 # - Only claim Tab inside Kaku sessions unless explicitly disabled
 if [[ -z "\${KAKU_SMART_TAB_DISABLE:-}" ]] && [[ "\${TERM_PROGRAM:-}" == "Kaku" ]]; then
     _kaku_tab_widget() {
@@ -1795,8 +1796,8 @@ fi
 # 2. No other autosuggest system is active (to avoid widget wrapping conflicts)
 if ! (( ${+functions[_zsh_autosuggest_start]} )) && [[ "${_kaku_external_autosuggest_provider:-0}" != "1" ]] && [[ -f "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then
     source "$KAKU_ZSH_DIR/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh"
-    # Smart Tab: completion-first by default, optional suggestion-first via
-    # KAKU_TAB_ACCEPT_SUGGEST_FIRST=1.
+    # Smart Tab: suggestion-first when KAKU_TAB_ACCEPT_SUGGEST_FIRST=1,
+    # otherwise completion-first.
     # Keep this widget out of autosuggestions rebinding, otherwise POSTDISPLAY is
     # cleared before our condition check and Tab always falls back to completion.
     typeset -ga ZSH_AUTOSUGGEST_IGNORE_WIDGETS

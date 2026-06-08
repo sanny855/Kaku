@@ -2523,6 +2523,13 @@ mod tests {
     }
 
     #[test]
+    fn smart_tab_mode_defaults_to_suggestion_first() {
+        let config = super::Config::default();
+
+        assert_eq!(config.smart_tab_mode, super::SmartTabMode::SuggestionFirst);
+    }
+
+    #[test]
     fn close_confirmation_policy_matches_prompt_modes() {
         use super::CloseConfirmation::{AlwaysPrompt, NeverPrompt, SmartPrompt};
 
@@ -3192,9 +3199,9 @@ fn smart_tab_env_is_explicit(cmd: &CommandBuilder) -> bool {
 #[derive(Debug, ToDynamic, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SmartTabMode {
     /// Tab shows the completion list; use arrow keys to accept autosuggestions.
-    #[default]
     CompletionFirst,
     /// Tab accepts autosuggestions when available, falls back to completion.
+    #[default]
     SuggestionFirst,
     /// Disables Smart Tab entirely, restoring native zsh Tab behavior.
     Off,
