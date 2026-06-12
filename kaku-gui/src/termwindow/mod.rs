@@ -1019,6 +1019,13 @@ pub struct TermWindow {
     current_modifier_and_leds: (Modifiers, KeyboardLedStatus),
     current_mouse_buttons: Vec<MousePress>,
     current_mouse_capture: Option<MouseCapture>,
+    /// True while the held left button is driving a terminal text selection,
+    /// i.e. the press/drag actually resolved to a SelectTextAtMouseCursor or
+    /// ExtendSelectionToMouseCursor assignment. A left press forwarded to a
+    /// mouse-reporting application (claude code, vim, tmux with mouse on)
+    /// leaves this false so wheel events are not hijacked into
+    /// selection-extension (#455).
+    selection_drag_active: bool,
 
     opengl_info: Option<String>,
 
@@ -1246,6 +1253,7 @@ impl TermWindow {
             self.last_mouse_click = None;
             self.current_mouse_buttons.clear();
             self.current_mouse_capture = None;
+            self.selection_drag_active = false;
             self.window_drag.is_click_to_focus = false;
 
             for state in self.pane_state.borrow_mut().values_mut() {
@@ -1661,6 +1669,7 @@ impl TermWindow {
             pane_state: RefCell::new(HashMap::new()),
             current_mouse_buttons: vec![],
             current_mouse_capture: None,
+            selection_drag_active: false,
             last_mouse_click: None,
             current_highlight: None,
             quad_generation: 0,

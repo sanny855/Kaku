@@ -175,13 +175,20 @@ enum SelectionDragWheelAction {
 ///
 /// Returning `None` is the "not in a selection drag" signal — callers should
 /// continue through the normal wheel routing path.
+///
+/// `selection_drag_active` must come from the binding lookup: a left press in
+/// a mouse-reporting pane is forwarded to the application without starting a
+/// selection, and its wheel events must keep flowing to the application
+/// instead of conjuring a selection out of thin air (#455).
 fn wheel_during_terminal_selection_action(
     capture: Option<&super::MouseCapture>,
     current_mouse_buttons: &[MousePress],
     mouse_buttons: WMB,
+    selection_drag_active: bool,
     behavior: SelectionWheelScrollBehavior,
 ) -> Option<SelectionDragWheelAction> {
-    let is_terminal_selection_drag = matches!(capture, Some(super::MouseCapture::TerminalPane(_)))
+    let is_terminal_selection_drag = selection_drag_active
+        && matches!(capture, Some(super::MouseCapture::TerminalPane(_)))
         && (current_mouse_buttons.contains(&MousePress::Left) || mouse_buttons == WMB::LEFT);
 
     if !is_terminal_selection_drag {
@@ -201,6 +208,9 @@ impl super::TermWindow {
     fn finish_mouse_release(&mut self, press: MousePress) {
         self.current_mouse_capture = None;
         self.current_mouse_buttons.retain(|p| p != &press);
+        if press == MousePress::Left {
+            self.selection_drag_active = false;
+        }
     }
 
     /// Handle a wheel event that arrived while a left-button terminal
@@ -496,6 +506,7 @@ impl super::TermWindow {
                 self.current_mouse_capture.as_ref(),
                 &self.current_mouse_buttons,
                 event.mouse_buttons,
+                self.selection_drag_active,
                 self.config.selection_wheel_scroll_behavior,
             ) {
                 self.handle_wheel_during_terminal_selection(action, &event, &pane, context);
@@ -656,6 +667,12 @@ impl super::TermWindow {
                 self.last_mouse_click = Some(click);
                 self.current_mouse_buttons.retain(|p| p != press);
                 self.current_mouse_buttons.push(*press);
+                if press == &MousePress::Left {
+                    // Re-evaluated by the binding lookup for this press; a
+                    // press that is forwarded to a mouse-reporting app must
+                    // not inherit a stale selection-drag state (#455).
+                    self.selection_drag_active = false;
+                }
 
                 if press == &MousePress::Left
                     && terminal_origin_y > 0
@@ -1840,11 +1857,41 @@ impl super::TermWindow {
                     .input_map
                     .lookup_mouse(event_trigger_type, mouse_mods)
                 {
+                    if matches!(
+                        action,
+                        KeyAssignment::SelectTextAtMouseCursor(_)
+                            | KeyAssignment::ExtendSelectionToMouseCursor(_)
+                    ) {
+                        // The held left button is genuinely driving a text
+                        // selection; wheel events may now scroll-and-extend it.
+                        self.selection_drag_active = true;
+                    }
                     if let Err(err) = self.perform_key_assignment(&pane, &action) {
                         log::debug!("mouse assignment failed: {err:#}");
                     }
                     return;
                 }
+            }
+        }
+
+        // A plain left press that reaches this point is being forwarded to a
+        // mouse-reporting application (claude code, vim, tmux with mouse on)
+        // instead of matching the SelectTextAtMouseCursor binding, which is
+        // gated on mouse_reporting=false. Clear any existing GUI selection
+        // here, matching iTerm2: without this the highlight has no remaining
+        // clear path and stays on the pane forever (#455).
+        if matches!(event.kind, WMEK::Press(MousePress::Left))
+            && allow_action
+            && !self.window_drag.edge_drag_in_progress
+            && !(self.config.swallow_mouse_click_on_pane_focus && is_click_to_focus_pane)
+        {
+            let needs_clear = {
+                let selection = self.selection(pane.pane_id());
+                selection.range.is_some() || selection.origin.is_some()
+            };
+            if needs_clear {
+                self.selection(pane.pane_id()).clear();
+                context.invalidate();
             }
         }
 
@@ -2157,6 +2204,7 @@ mod tests {
                 Some(&MouseCapture::TerminalPane(PaneId::new(1))),
                 &buttons,
                 MouseButtons::LEFT,
+                true,
                 SelectionWheelScrollBehavior::default(),
             ),
             Some(SelectionDragWheelAction::ScrollAndExtend)
@@ -2171,6 +2219,7 @@ mod tests {
                 Some(&MouseCapture::TerminalPane(PaneId::new(1))),
                 &buttons,
                 MouseButtons::LEFT,
+                true,
                 SelectionWheelScrollBehavior::Ignore,
             ),
             Some(SelectionDragWheelAction::Suppress)
@@ -2185,6 +2234,7 @@ mod tests {
                 Some(&MouseCapture::TerminalPane(PaneId::new(1))),
                 &buttons,
                 MouseButtons::LEFT,
+                true,
                 SelectionWheelScrollBehavior::ScrollOnly,
             ),
             Some(SelectionDragWheelAction::ScrollOnly)
@@ -2199,6 +2249,26 @@ mod tests {
                 Some(&MouseCapture::TerminalPane(PaneId::new(1))),
                 &buttons,
                 MouseButtons::RIGHT,
+                true,
+                SelectionWheelScrollBehavior::Extend,
+            ),
+            None
+        );
+    }
+
+    /// Regression guard for #455: a left press forwarded to a mouse-reporting
+    /// application (claude code, vim) sets capture and button state but never
+    /// matches a selection binding. Wheel events during that hold must route
+    /// through the normal path instead of creating/extending a selection.
+    #[test]
+    fn forwarded_press_in_mouse_reporting_pane_does_not_extend_selection() {
+        let buttons = terminal_selection_buttons();
+        assert_eq!(
+            wheel_during_terminal_selection_action(
+                Some(&MouseCapture::TerminalPane(PaneId::new(1))),
+                &buttons,
+                MouseButtons::LEFT,
+                false,
                 SelectionWheelScrollBehavior::Extend,
             ),
             None
@@ -2213,6 +2283,7 @@ mod tests {
                 Some(&MouseCapture::UI),
                 &buttons,
                 MouseButtons::LEFT,
+                true,
                 SelectionWheelScrollBehavior::Extend,
             ),
             None
@@ -2227,6 +2298,7 @@ mod tests {
                 None,
                 &buttons,
                 MouseButtons::NONE,
+                true,
                 SelectionWheelScrollBehavior::Extend,
             ),
             None
