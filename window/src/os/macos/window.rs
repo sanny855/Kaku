@@ -724,6 +724,16 @@ fn requested_window_drag_action(
     }
 }
 
+/// Frame origin that centers a window of `size` inside `visible`, both in the
+/// same screen's point coordinates. A window larger than the visible frame is
+/// pinned to the visible origin instead of drifting onto a neighbor screen.
+fn centered_frame_origin(visible: NSRect, size: NSSize) -> NSPoint {
+    NSPoint::new(
+        visible.origin.x + ((visible.size.width - size.width) / 2.).max(0.),
+        visible.origin.y + ((visible.size.height - size.height) / 2.).max(0.),
+    )
+}
+
 fn nsrect_approx_eq(a: NSRect, b: NSRect, tolerance: f64) -> bool {
     (a.origin.x - b.origin.x).abs() <= tolerance
         && (a.origin.y - b.origin.y).abs() <= tolerance
@@ -1568,6 +1578,13 @@ impl WindowOps for Window {
     fn restore(&self) {
         Connection::with_window_inner(self.id, move |inner| {
             inner.restore();
+            Ok(())
+        });
+    }
+
+    fn center(&self) {
+        Connection::with_window_inner(self.id, move |inner| {
+            inner.center();
             Ok(())
         });
     }
@@ -2442,6 +2459,28 @@ impl WindowInner {
             unsafe {
                 NSWindow::zoom_(*self.window, nil);
             }
+        }
+    }
+
+    /// Center on the window's own screen, working entirely in that screen's
+    /// point coordinates. Keep this native rather than routing through
+    /// `Connection::screens()` plus `set_window_position`: the single-screen
+    /// point math needs no cross-space conversion at all.
+    fn center(&mut self) {
+        unsafe {
+            let screen: id = msg_send![*self.window, screen];
+            let screen = if screen.is_null() {
+                NSScreen::mainScreen(nil)
+            } else {
+                screen
+            };
+            if screen.is_null() {
+                return;
+            }
+            let visible: NSRect = msg_send![screen, visibleFrame];
+            let frame = NSWindow::frame(*self.window);
+            let origin = centered_frame_origin(visible, frame.size);
+            NSWindow::setFrameOrigin_(*self.window, origin);
         }
     }
 
@@ -3357,6 +3396,24 @@ fn should_clear_modifiers_for_empty_unmod(
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn centered_frame_origin_centers_inside_visible_frame() {
+        // A secondary display sitting left of the primary, in its own
+        // point coordinates: origin can be negative.
+        let visible = NSRect::new(NSPoint::new(-1920., 100.), NSSize::new(1920., 1055.));
+        let origin = centered_frame_origin(visible, NSSize::new(800., 600.));
+        assert_eq!(origin.x, -1360.);
+        assert_eq!(origin.y, 327.5);
+    }
+
+    #[test]
+    fn centered_frame_origin_pins_oversized_window_to_visible_origin() {
+        let visible = NSRect::new(NSPoint::new(-1920., 100.), NSSize::new(1920., 1055.));
+        let origin = centered_frame_origin(visible, NSSize::new(2400., 1600.));
+        assert_eq!(origin.x, -1920.);
+        assert_eq!(origin.y, 100.);
+    }
 
     #[test]
     fn non_menu_virtual_keys_are_recognized() {
@@ -4383,6 +4440,7 @@ impl WindowView {
         let mouse_buttons;
         let modifiers;
         let screen_coords;
+        let window_origin;
         unsafe {
             let point = NSView::convertPoint_fromView_(view, nsevent.locationInWindow(), nil);
             let rect = NSRect::new(NSPoint::new(0., 0.), NSSize::new(point.x, point.y));
@@ -4396,6 +4454,17 @@ impl WindowView {
             mouse_buttons = decode_mouse_buttons(NSEvent::pressedMouseButtons(nsevent));
             modifiers = key_modifiers(nsevent.modifierFlags());
             screen_coords = NSEvent::mouseLocation(nsevent);
+            // Capture the true content origin: inferring it in the gui layer
+            // as screen_coords - coords mixes the primary screen's scale with
+            // the window screen's backing scale and teleports the window when
+            // a drag starts on a display with a different scale (#456).
+            let ns_window: id = msg_send![view, window];
+            window_origin = window_position(ns_window).unwrap_or_else(|| {
+                ScreenPoint::new(
+                    cartesian_to_screen_point(screen_coords).x - coords.x as isize,
+                    cartesian_to_screen_point(screen_coords).y - coords.y as isize,
+                )
+            });
         }
         let platform_click_count = match &kind {
             MouseEventKind::Press(_) | MouseEventKind::Release(_) => {
@@ -4407,6 +4476,7 @@ impl WindowView {
             kind,
             coords: Point::new(coords.x as isize, coords.y as isize),
             screen_coords: cartesian_to_screen_point(screen_coords),
+            window_origin,
             mouse_buttons,
             modifiers,
             platform_click_count,

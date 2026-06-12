@@ -1281,10 +1281,17 @@ pub enum MouseEventKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MouseEvent {
     pub kind: MouseEventKind,
-    /// Coordinates of the mouse relative to the top left of the window
+    /// Coordinates of the mouse relative to the top left of the window,
+    /// in the window's own backing-pixel scale
     pub coords: Point,
     /// The mouse position in screen coordinates
     pub screen_coords: crate::ScreenPoint,
+    /// Top-left of the window's content area, in the same coordinate space
+    /// as `screen_coords`. `coords` uses the window's own screen scale, so
+    /// `screen_coords - coords` does not recover the window origin when the
+    /// window sits on a display whose scale differs from the primary one;
+    /// platforms must capture the true origin here instead.
+    pub window_origin: crate::ScreenPoint,
     pub mouse_buttons: MouseButtons,
     pub modifiers: Modifiers,
     /// Platform-native click count (e.g. NSEvent clickCount on macOS).

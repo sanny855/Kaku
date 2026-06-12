@@ -91,6 +91,19 @@ fn should_use_native_maximized_window_drag(window_state: WindowState) -> bool {
         && !window_state.contains(WindowState::FULL_SCREEN)
 }
 
+/// New window top-left for a manual title-bar drag: the window origin captured
+/// by the platform at the anchor event, shifted by the screen-space mouse
+/// delta. Both inputs live in `screen_coords` space, so this stays correct
+/// when the window is on a display whose backing scale differs from the
+/// primary display's (#456). `event.coords` must not participate here: it is
+/// in the window's own backing-pixel scale.
+fn manual_drag_window_top_left(start: &MouseEvent, event: &MouseEvent) -> ::window::ScreenPoint {
+    ::window::ScreenPoint::new(
+        start.window_origin.x + (event.screen_coords.x - start.screen_coords.x),
+        start.window_origin.y + (event.screen_coords.y - start.screen_coords.y),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TitleAreaZoomAction {
     Maximize,
@@ -670,22 +683,14 @@ impl super::TermWindow {
                         self.window_drag.is_window_dragging = false;
                         self.current_mouse_capture = None;
                     } else {
-                        // Dragging the window
-                        // Compute the distance since the initial event
-                        let delta_x = start.screen_coords.x - event.screen_coords.x;
-                        let delta_y = start.screen_coords.y - event.screen_coords.y;
-
-                        // Now compute a new window position.
-                        // We don't have a direct way to get the position,
-                        // but we can infer it by comparing the mouse coords
-                        // with the screen coords in the initial event.
-                        // This computes the original top_left position,
-                        // and applies the total drag delta to it.
-                        let top_left = ::window::ScreenPoint::new(
-                            (start.screen_coords.x - start.coords.x) - delta_x,
-                            (start.screen_coords.y - start.coords.y) - delta_y,
-                        );
-                        // and now tell the window to go there
+                        // Dragging the window: apply the screen-space delta
+                        // since the anchor event to the window origin that the
+                        // platform captured at the anchor. Do not infer the
+                        // origin from screen_coords - coords: those use
+                        // different pixel scales when the window is on a
+                        // display whose scale differs from the primary one,
+                        // which teleported the window at drag start (#456).
+                        let top_left = manual_drag_window_top_left(&start, &event);
                         context.set_window_position(top_left);
                         return;
                     }
@@ -1209,8 +1214,8 @@ impl super::TermWindow {
                 TabBarItem::WindowButton(window::IntegratedTitleButton::Maximize) => {
                     if let Some(item) = self.last_ui_item.clone() {
                         let bounds: ::window::ScreenRect = euclid::rect(
-                            item.x as isize - (event.coords.x as isize - event.screen_coords.x),
-                            item.y as isize - (event.coords.y as isize - event.screen_coords.y),
+                            item.x as isize + event.window_origin.x,
+                            item.y as isize + event.window_origin.y,
                             item.width as isize,
                             item.height as isize,
                         );
@@ -1924,7 +1929,7 @@ fn wmek_to_tmek_and_button(event: &MouseEvent) -> (TMEK, TMB) {
 #[cfg(test)]
 mod tests {
     use super::{
-        mouse_dispatch_target, should_bypass_wheel_assignment_in_alt,
+        manual_drag_window_top_left, mouse_dispatch_target, should_bypass_wheel_assignment_in_alt,
         should_preserve_tmux_bypass_reporting, should_use_manual_window_drag,
         should_use_native_maximized_window_drag, should_zoom_title_area,
         tab_bar_item_starts_window_drag, title_area_double_click_zoom_action,
@@ -1936,8 +1941,49 @@ mod tests {
     use config::SelectionWheelScrollBehavior;
     use mux::pane::PaneId;
     use window::{
-        IntegratedTitleButton, Modifiers, MouseButtons, MousePress, WindowDecorations, WindowState,
+        IntegratedTitleButton, Modifiers, MouseButtons, MouseEvent, MouseEventKind, MousePress,
+        WindowDecorations, WindowState,
     };
+
+    fn drag_event(
+        coords: (isize, isize),
+        screen_coords: (isize, isize),
+        window_origin: (isize, isize),
+    ) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Move,
+            coords: euclid::point2(coords.0, coords.1),
+            screen_coords: euclid::point2(screen_coords.0, screen_coords.1),
+            window_origin: euclid::point2(window_origin.0, window_origin.1),
+            mouse_buttons: MouseButtons::LEFT,
+            modifiers: Modifiers::NONE,
+            platform_click_count: 1,
+        }
+    }
+
+    #[test]
+    fn manual_drag_applies_screen_delta_to_platform_origin() {
+        // Window on a 1x display while the primary display is 2x: coords are
+        // in 1x backing pixels but screen_coords are normalized to the 2x
+        // primary scale, so origin inference from screen_coords - coords would
+        // be off by the in-window click offset (#456). The platform-captured
+        // origin must be used as-is.
+        let start = drag_event((400, 20), (4000, 1040), (3200, 1000));
+        let moved = drag_event((400, 20), (4030, 1100), (3200, 1000));
+        assert_eq!(
+            manual_drag_window_top_left(&start, &moved),
+            euclid::point2(3230, 1060)
+        );
+    }
+
+    #[test]
+    fn manual_drag_without_motion_keeps_window_origin() {
+        let start = drag_event((123, 45), (5000, 600), (700, 300));
+        assert_eq!(
+            manual_drag_window_top_left(&start, &start),
+            euclid::point2(700, 300)
+        );
+    }
 
     #[test]
     fn terminal_capture_keeps_release_routed_to_terminal() {

@@ -440,6 +440,11 @@ pub trait WindowOps {
     fn maximize(&self) {}
     fn restore(&self) {}
     fn focus(&self) {}
+    /// Center the window within the visible frame of the screen it
+    /// currently occupies. Implemented natively so the math stays in one
+    /// coordinate space; screen rects from `Connection::screens()` and
+    /// window pixel sizes use different scales on mixed-DPI setups.
+    fn center(&self) {}
 
     fn toggle_fullscreen(&self) {}
 
