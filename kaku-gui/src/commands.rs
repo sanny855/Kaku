@@ -90,6 +90,93 @@ impl std::fmt::Debug for CommandDef {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn command_rank_for_menu(title: &str, action: &KeyAssignment) -> usize {
+    match title {
+        "Kaku" => match action {
+            HideApplication => 80,
+            QuitApplication => 90,
+            _ => 500,
+        },
+        "Shell" => match action {
+            SpawnWindow => 10,
+            SpawnTab(_) | SpawnCommandInNewTab(_) => 20,
+            EmitEvent(name) if name == "kaku-ai-chat" => 20,
+            EmitEvent(name) if name == "run-kaku-ai-config" => 21,
+            EmitEvent(name) if name == "kaku-launch-lazygit" => 22,
+            EmitEvent(name) if name == "kaku-launch-yazi" => 23,
+            EmitEvent(name) if name == "kaku-open-remote-files" => 24,
+            SplitVertical(_) | SplitHorizontal(_) | SplitPane(_) => 30,
+            CloseCurrentTab { .. } | CloseCurrentPane { .. } => 40,
+            RestorePreviousWindow => 42,
+            ActivateCommandPalette => 25,
+            ShowLauncher | ShowLauncherArgs(_) => 50,
+            AttachDomain(_) => 70,
+            DetachDomain(_) => 80,
+            _ => 500,
+        },
+        "Edit" => match action {
+            CopyTextTo { .. } | CopyTo(_) => 10,
+            PasteFrom(_) => 20,
+            Search(_) => 30,
+            QuickSelect => 40,
+            ClearScrollback(_) => 50,
+            _ => 500,
+        },
+        "View" => match action {
+            ResetFontSize => 10,
+            IncreaseFontSize => 20,
+            DecreaseFontSize => 30,
+            ResetFontAndWindowSize => 40,
+            ScrollToTop => 50,
+            ScrollToBottom => 51,
+            _ => 500,
+        },
+        "Window" => match action {
+            Hide => 10,
+            ToggleFullScreen => 12,
+            CenterWindow => 13,
+            MaximizeWindow => 14,
+            ToggleAlwaysOnTop => 15,
+            ActivateWindowRelative(-1) => 20,
+            ActivateWindowRelative(1) => 21,
+            ActivateWindow(_) => 22,
+            ActivateTabRelative(-1) => 30,
+            ActivateTabRelative(1) => 31,
+            ActivateLastTab => 32,
+            ShowTabNavigator => 33,
+            ToggleCurrentTabPanesInputBroadcast => 34,
+            ToggleAllPanesInputBroadcast => 35,
+            MoveTabRelative(-1) => 40,
+            MoveTabRelative(1) => 41,
+            PaneSelect(PaneSelectArguments {
+                mode: PaneSelectMode::Activate,
+                ..
+            }) => 50,
+            PaneSelect(PaneSelectArguments {
+                mode: PaneSelectMode::MoveToNewTab,
+                ..
+            }) => 51,
+            PaneSelect(PaneSelectArguments {
+                mode: PaneSelectMode::MoveToNewWindow,
+                ..
+            }) => 52,
+            TogglePaneZoomState => 60,
+            SwitchToWorkspace { .. } | SwitchWorkspaceRelative(_) => 70,
+            _ => 500,
+        },
+        "Help" => match action {
+            OpenUri(uri) if uri == "https://kaku.fun/docs/" => 5,
+            OpenUri(uri) if uri == "https://github.com/tw93/Kaku" => 10,
+            OpenUri(uri) if uri == "https://github.com/tw93/Kaku/discussions/" => 20,
+            OpenUri(uri) if uri == "https://github.com/tw93/Kaku/issues/" => 30,
+            ShowDebugOverlay => 90,
+            _ => 500,
+        },
+        _ => 1000,
+    }
+}
+
 impl CommandDef {
     /// Blech. Depending on the OS, a shifted key combination
     /// such as CTRL-SHIFT-L may present as either:
@@ -254,6 +341,7 @@ impl CommandDef {
             ShowTabNavigator,
             // Help menu
             ShowDebugOverlay,
+            OpenUri("https://kaku.fun/docs/".to_string()),
             OpenUri("https://github.com/tw93/Kaku".to_string()),
             OpenUri("https://github.com/tw93/Kaku/issues/".to_string()),
         ];
@@ -717,91 +805,6 @@ impl CommandDef {
         for cmd in &commands {
             if !order.contains(&cmd.menubar[0]) {
                 order.push(cmd.menubar[0]);
-            }
-        }
-
-        fn command_rank_for_menu(title: &str, action: &KeyAssignment) -> usize {
-            match title {
-                "Kaku" => match action {
-                    HideApplication => 80,
-                    QuitApplication => 90,
-                    _ => 500,
-                },
-                "Shell" => match action {
-                    SpawnWindow => 10,
-                    SpawnTab(_) | SpawnCommandInNewTab(_) => 20,
-                    EmitEvent(name) if name == "kaku-ai-chat" => 20,
-                    EmitEvent(name) if name == "run-kaku-ai-config" => 21,
-                    EmitEvent(name) if name == "kaku-launch-lazygit" => 22,
-                    EmitEvent(name) if name == "kaku-launch-yazi" => 23,
-                    EmitEvent(name) if name == "kaku-open-remote-files" => 24,
-                    SplitVertical(_) | SplitHorizontal(_) | SplitPane(_) => 30,
-                    CloseCurrentTab { .. } | CloseCurrentPane { .. } => 40,
-                    RestorePreviousWindow => 42,
-                    ActivateCommandPalette => 25,
-                    ShowLauncher | ShowLauncherArgs(_) => 50,
-                    AttachDomain(_) => 70,
-                    DetachDomain(_) => 80,
-                    _ => 500,
-                },
-                "Edit" => match action {
-                    CopyTextTo { .. } | CopyTo(_) => 10,
-                    PasteFrom(_) => 20,
-                    Search(_) => 30,
-                    QuickSelect => 40,
-                    ClearScrollback(_) => 50,
-                    _ => 500,
-                },
-                "View" => match action {
-                    ResetFontSize => 10,
-                    IncreaseFontSize => 20,
-                    DecreaseFontSize => 30,
-                    ResetFontAndWindowSize => 40,
-                    ScrollToTop => 50,
-                    ScrollToBottom => 51,
-                    _ => 500,
-                },
-                "Window" => match action {
-                    Hide => 10,
-                    ToggleFullScreen => 12,
-                    CenterWindow => 13,
-                    MaximizeWindow => 14,
-                    ToggleAlwaysOnTop => 15,
-                    ActivateWindowRelative(-1) => 20,
-                    ActivateWindowRelative(1) => 21,
-                    ActivateWindow(_) => 22,
-                    ActivateTabRelative(-1) => 30,
-                    ActivateTabRelative(1) => 31,
-                    ActivateLastTab => 32,
-                    ShowTabNavigator => 33,
-                    ToggleCurrentTabPanesInputBroadcast => 34,
-                    ToggleAllPanesInputBroadcast => 35,
-                    MoveTabRelative(-1) => 40,
-                    MoveTabRelative(1) => 41,
-                    PaneSelect(PaneSelectArguments {
-                        mode: PaneSelectMode::Activate,
-                        ..
-                    }) => 50,
-                    PaneSelect(PaneSelectArguments {
-                        mode: PaneSelectMode::MoveToNewTab,
-                        ..
-                    }) => 51,
-                    PaneSelect(PaneSelectArguments {
-                        mode: PaneSelectMode::MoveToNewWindow,
-                        ..
-                    }) => 52,
-                    TogglePaneZoomState => 60,
-                    SwitchToWorkspace { .. } | SwitchWorkspaceRelative(_) => 70,
-                    _ => 500,
-                },
-                "Help" => match action {
-                    OpenUri(uri) if uri == "https://github.com/tw93/Kaku" => 10,
-                    OpenUri(uri) if uri == "https://github.com/tw93/Kaku/discussions/" => 20,
-                    OpenUri(uri) if uri == "https://github.com/tw93/Kaku/issues/" => 30,
-                    ShowDebugOverlay => 90,
-                    _ => 500,
-                },
-                _ => 1000,
             }
         }
 
@@ -2227,6 +2230,14 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             icon: None,
         },
         OpenUri(uri) => match uri.as_ref() {
+            "https://kaku.fun/docs/" => CommandDef {
+                brief: "Kaku Help".into(),
+                doc: "Open Kaku documentation in your browser".into(),
+                keys: vec![],
+                args: &[],
+                menubar: &["Help"],
+                icon: None,
+            },
             "https://github.com/tw93/Kaku" => CommandDef {
                 brief: "Star on GitHub".into(),
                 doc: "Star Kaku on GitHub".into(),
@@ -2746,6 +2757,8 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use super::command_rank_for_menu;
     use super::{derive_command_from_key_assignment, CommandDef};
     use config::keyassignment::KeyAssignment;
     use config::ConfigHandle;
@@ -2790,6 +2803,39 @@ mod tests {
         assert!(CommandDef::default_key_assignments(&config)
             .iter()
             .any(|(_, _, action)| *action == KeyAssignment::ToggleAllPanesInputBroadcast));
+    }
+
+    #[test]
+    fn kaku_help_opens_documentation_from_help_menu() {
+        let cmd = derive_command_from_key_assignment(&KeyAssignment::OpenUri(
+            "https://kaku.fun/docs/".to_string(),
+        ))
+        .expect("command");
+
+        assert_eq!(cmd.brief, "Kaku Help");
+        assert_eq!(cmd.doc, "Open Kaku documentation in your browser");
+        assert_eq!(cmd.menubar, &["Help"]);
+    }
+
+    #[test]
+    fn kaku_help_is_in_palette_only_actions() {
+        let config = ConfigHandle::default_config();
+
+        assert!(CommandDef::actions_for_palette_only(&config)
+            .iter()
+            .any(|cmd| {
+                let action = &cmd.action;
+                matches!(action, KeyAssignment::OpenUri(uri) if uri == "https://kaku.fun/docs/")
+            }));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn kaku_help_sorts_before_github_help_links() {
+        let docs = KeyAssignment::OpenUri("https://kaku.fun/docs/".to_string());
+        let github = KeyAssignment::OpenUri("https://github.com/tw93/Kaku".to_string());
+
+        assert!(command_rank_for_menu("Help", &docs) < command_rank_for_menu("Help", &github));
     }
 
     #[test]
