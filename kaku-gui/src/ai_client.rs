@@ -361,7 +361,16 @@ pub(crate) fn build_client_with_proxy(timeout: std::time::Duration) -> reqwest::
     if let Some(proxy_url) = config::proxy::detect_system_proxy() {
         match reqwest::Proxy::all(&proxy_url) {
             Ok(proxy) => {
-                log::info!("HTTP client using system proxy: {}", proxy_url);
+                // Bypass the proxy for loopback/LAN/CGNAT ranges so a
+                // self-hosted model server stays reachable. Critical because
+                // reqwest is built without the `socks` feature, so forcing a
+                // SOCKS proxy onto an internal `base_url` fails the request
+                // outright ("error sending request for url").
+                let proxy = proxy.no_proxy(build_no_proxy());
+                log::info!(
+                    "HTTP client using system proxy: {} (private-range bypass enabled)",
+                    proxy_url
+                );
                 builder = builder.proxy(proxy);
             }
             Err(e) => log::warn!(
@@ -376,6 +385,45 @@ pub(crate) fn build_client_with_proxy(timeout: std::time::Duration) -> reqwest::
         log::warn!("Failed to build HTTP client: {e}; falling back to default client");
         reqwest::blocking::Client::new()
     })
+}
+
+/// Hosts and ranges that must bypass any system proxy and connect directly.
+///
+/// A user with a global SOCKS/HTTP proxy still needs to reach a self-hosted
+/// model server on loopback, their LAN, or a CGNAT/Tailscale address. The list
+/// combines hard-coded private/loopback ranges, the `NO_PROXY` environment
+/// variable, and the macOS `scutil` ExceptionsList. Returns `None` only if the
+/// joined list is unparseable, which leaves the proxy applied as before.
+fn build_no_proxy() -> Option<reqwest::NoProxy> {
+    let mut entries: Vec<String> = [
+        "localhost",
+        "127.0.0.0/8",
+        "::1",
+        "169.254.0.0/16",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        ".local",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+
+    for var in ["NO_PROXY", "no_proxy"] {
+        if let Ok(v) = std::env::var(var) {
+            entries.extend(
+                v.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            );
+        }
+    }
+
+    entries.extend(config::proxy::system_proxy_exceptions());
+
+    reqwest::NoProxy::from_string(&entries.join(","))
 }
 
 /// Process-level HTTP client shared across all overlay sessions.
