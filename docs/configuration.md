@@ -35,6 +35,23 @@ return config
 
 ---
 
+## Recommended Config
+
+Start with the generated file and keep overrides small. Most users should only touch the settings they can see or feel in daily terminal use:
+
+```lua
+config.font_size = 16
+config.color_scheme = "Kaku Dark"
+config.window_background_opacity = 0.95
+config.scrollback_lines = 10000
+```
+
+Keep terminal behavior, appearance, key bindings, launch behavior, and other WezTerm-compatible settings in `kaku.lua`.
+
+Manage Kaku Assistant settings with `kaku ai`. That command writes `~/.config/kaku/assistant.toml` for provider, model, base URL, auth, API keys, and tool settings. The Lua/TOML split is intentional: `kaku.lua` stays compatible with WezTerm-style terminal configuration, while `assistant.toml` is managed by the AI setup flow.
+
+---
+
 ## Appearance
 
 **Theme**
