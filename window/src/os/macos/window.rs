@@ -2012,9 +2012,22 @@ impl WindowInner {
                 let _: () = msg_send![*self.window, setBackgroundColor: ns_bg];
                 objc2_core_graphics::CGColor::new_srgb(bg.0.into(), bg.1.into(), bg.2.into(), 1.0)
             } else {
+                // Keep the NSWindow itself clear so the body stays see-through,
+                // but tint the layer backing with the theme background at the
+                // window opacity. macOS 26 exposes a sliver of layer backing at
+                // the rounded top corners that the GPU surface does not cover
+                // (visible on the side without the traffic-light buttons); a
+                // fully clear backing renders that sliver black, so fill it with
+                // the same semi-transparent background the body uses.
+                let bg = self
+                    .config
+                    .resolved_palette
+                    .background
+                    .unwrap_or(RgbaColor::from(SrgbaTuple(0., 0., 0., 1.0)));
+                let a = self.config.window_background_opacity as f64;
                 let clear: id = msg_send![class!(NSColor), clearColor];
                 let _: () = msg_send![*self.window, setBackgroundColor: clear];
-                objc2_core_graphics::CGColor::new_srgb(0., 0., 0., 0.)
+                objc2_core_graphics::CGColor::new_srgb(bg.0.into(), bg.1.into(), bg.2.into(), a)
             };
 
             // Match our Metal layer's corner radius to the window frame's corner
@@ -2041,7 +2054,20 @@ impl WindowInner {
                     } else {
                         0.0
                     };
-                    if !force_square && corner_radius == 0.0 && macos_version_major() >= 26 {
+                    // macOS 26 clips window corners at the compositor level and
+                    // reports cornerRadius == 0 on the frame layer. Rounding the
+                    // Metal layer ourselves with a guessed radius that does not
+                    // match the compositor leaves a crescent at each corner that
+                    // exposes the window backing -- a black block under a
+                    // transparent window. Only round the layer when opaque (the
+                    // gap is filled with the theme color there anyway); for
+                    // transparent windows keep radius 0 so the layer fills the
+                    // full frame and the compositor owns the rounding.
+                    if !force_square
+                        && corner_radius == 0.0
+                        && macos_version_major() >= 26
+                        && is_opaque == YES
+                    {
                         corner_radius = 10.0;
                     }
                     log::trace!(
