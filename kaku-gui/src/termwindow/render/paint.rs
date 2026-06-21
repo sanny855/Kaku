@@ -342,7 +342,20 @@ impl crate::TermWindow {
                     // tab_bar_height here would double-paint that region.
                     // When tab bar is at top, it starts at y=0 and covers the
                     // titlebar area completely, so no top fill needed.
+                    // paint_window_borders() repaints the full top OS border
+                    // with the pane background (on a higher layer) whenever the
+                    // integrated-buttons inset is active. Filling it here too
+                    // would stack two semi-transparent quads, making the top
+                    // strip read as a darker, near-opaque band under
+                    // window_background_opacity < 1, so skip it in that case.
                     let top_fill_height = if self.show_tab_bar && !self.config.tab_bar_at_bottom {
+                        0.0
+                    } else if super::borders::integrated_buttons_top_inset(
+                        &self.config,
+                        self.layout_is_effective_fullscreen(),
+                        self.show_tab_bar && !self.config.tab_bar_at_bottom,
+                    ) > 0
+                    {
                         0.0
                     } else {
                         border.top.get() as f32
